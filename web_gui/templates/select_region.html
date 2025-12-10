@@ -1,0 +1,29 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Select Region - EC2 Menu</title>
+    <style>
+        body { font-family: sans-serif; margin: 2em; }
+        h1, h2 { color: #333; }
+        .region-list { list-style: none; padding: 0; }
+        .region-list li { margin: 0.5em 0; }
+        .region-list a { text-decoration: none; color: #007bff; font-size: 1.2em; }
+        .region-list a:hover { text-decoration: underline; }
+        .back-link { margin-top: 2em; display: inline-block; }
+    </style>
+</head>
+<body>
+    <h1>Select AWS Region</h1>
+    <h2>Profile: {{ profile }}</h2>
+    <p>Please select the AWS region to use:</p>
+    <ul class="region-list">
+        {% for region in regions %}
+        <li><a href="{{ url_for('main_menu', region_name=region) }}">{{ region }}</a></li>
+        {% endfor %}
+    </ul>
+    <a href="{{ url_for('index') }}" class="back-link">&laquo; Back to Profile Selection</a>
+</body>
+</html>

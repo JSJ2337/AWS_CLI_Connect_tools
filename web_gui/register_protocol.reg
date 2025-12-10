@@ -1,0 +1,12 @@
+Windows Registry Editor Version 5.00
+
+[HKEY_CLASSES_ROOT\ec2menu]
+@="URL:ec2menu Protocol"
+"URL Protocol"=""
+
+[HKEY_CLASSES_ROOT\ec2menu\shell]
+
+[HKEY_CLASSES_ROOT\ec2menu\shell\open]
+
+[HKEY_CLASSES_ROOT\ec2menu\shell\open\command]
+@="\"py.exe\" \"D:\\jsj_wsl_data\\ec2menu_script\\web_gui\\protocol_handler.py\" \"%1\"""

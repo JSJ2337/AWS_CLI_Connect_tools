@@ -1,0 +1,58 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ..
+      dockerfile: ./web-version/backend/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONPATH=/app
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-east-1}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN}
+      - AWS_CLI_CACHE_DIR=/tmp/aws-cli-cache
+      - AWS_CLI_FILE_ENCODING=UTF-8
+      - AWS_DEFAULT_OUTPUT=json
+    # AWS 설정 파일은 이제 Docker 이미지에 포함됨
+    tmpfs:
+      # AWS CLI 캐시용 임시 파일 시스템
+      - /tmp/aws-cli-cache:noexec,nosuid,size=100m
+      - /tmp:noexec,nosuid,size=1g
+    restart: unless-stopped
+    networks:
+      - ec2menu-network
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "8080:80"  # nginx가 80포트로 서빙
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - ec2menu-network
+
+  # Redis for caching
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    networks:
+      - ec2menu-network
+
+  # Guacamole 서비스 제거됨 - 네이티브 RDP 클라이언트 사용
+
+networks:
+  ec2menu-network:
+    driver: bridge
+
+volumes:
+  redis_data:
