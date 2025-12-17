@@ -1512,9 +1512,8 @@ def reconnect_to_instance(manager: AWSManager, entry: dict):
                 # Windows RDP 접속
                 local_port = 10000 + (int(instance_id[-3:], 16) % 1000)
                 print(colored_text(f"(info) Windows 인스턴스 RDP 연결을 시작합니다 (localhost:{local_port})...", Colors.INFO))
-                
+
                 proc = start_port_forward(manager.profile, region, instance_id, local_port)
-                time.sleep(2)
                 launch_rdp(local_port)
                 
                 print("(info) RDP 창을 닫은 후, 이 터미널로 돌아와 Enter를 누르면 RDP 연결이 종료됩니다.")
@@ -1699,22 +1698,98 @@ def start_port_forward(profile, region, iid, port):
         cmd[1:1] = ['--profile', profile]
     return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
 
+def wait_for_port(port, timeout=30):
+    """포트가 LISTEN 상태가 될 때까지 대기"""
+    import socket
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(1)
+            result = sock.connect_ex(('localhost', port))
+            sock.close()
+            if result == 0:
+                return True
+        except:
+            pass
+        time.sleep(0.5)
+    return False
+
 def launch_rdp(port):
-    """macOS에서 FreeRDP를 사용하여 RDP 접속"""
-    if shutil.which('xfreerdp'):
-        # FreeRDP 설치됨
-        subprocess.Popen([
-            'xfreerdp',
-            f'/v:localhost:{port}',
-            '/cert:ignore',
-            '/u:Administrator',
-            '/dynamic-resolution',
-            '+clipboard'
-        ], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    else:
-        print(colored_text('⚠️ FreeRDP가 설치되지 않았습니다.', Colors.WARNING))
-        print(colored_text('   설치: brew install freerdp', Colors.INFO))
-        print(colored_text(f'   또는 Microsoft Remote Desktop으로 localhost:{port} 접속', Colors.INFO))
+    """macOS에서 FreeRDP로 RDP 접속"""
+    # xfreerdp 경로 확인
+    xfreerdp_path = shutil.which('xfreerdp')
+
+    if not xfreerdp_path:
+        print(colored_text('\n⚠️ FreeRDP가 설치되지 않았습니다.', Colors.WARNING))
+        print(colored_text('\n설치 방법:', Colors.INFO))
+        print(colored_text('   1. brew install freerdp', Colors.INFO))
+        print(colored_text('   2. brew install --cask xquartz (필요 시)', Colors.INFO))
+        print(colored_text('   3. 로그아웃 후 재로그인', Colors.INFO))
+        return
+
+    # 포트가 준비될 때까지 대기
+    print(colored_text(f'⏳ 포트 {port}가 준비될 때까지 대기 중...', Colors.INFO))
+    if not wait_for_port(port):
+        print(colored_text(f'\n❌ 포트 {port}가 준비되지 않았습니다.', Colors.ERROR))
+        return
+
+    print(colored_text('✅ 포트가 준비되었습니다.', Colors.SUCCESS))
+
+    # XQuartz 실행 확인 및 시작
+    xquartz_running = subprocess.run(
+        ['pgrep', '-x', 'Xquartz'],
+        capture_output=True
+    ).returncode == 0
+
+    if not xquartz_running:
+        print(colored_text('🔧 XQuartz를 시작합니다...', Colors.INFO))
+        subprocess.run(['open', '-a', 'XQuartz'])
+        time.sleep(2)  # XQuartz 초기화 대기
+
+    print(colored_text(f'\n📊 RDP 연결 정보:', Colors.HEADER))
+    print(colored_text(f'   호스트: localhost:{port}', Colors.INFO))
+    print(colored_text(f'   사용자: Administrator', Colors.INFO))
+    print(colored_text(f'   (비밀번호는 별도로 확인하세요)', Colors.WARNING))
+
+    # FreeRDP로 직접 연결 (SSM 포트 포워딩 최적화)
+    print(colored_text(f'\n✅ FreeRDP로 연결합니다...', Colors.SUCCESS))
+    print(colored_text('   (SSM 터널 최적화 모드)', Colors.INFO))
+
+    env = os.environ.copy()
+    env['DISPLAY'] = ':0'
+
+    rdp_cmd = [
+        'xfreerdp',
+        f'/v:localhost:{port}',
+        '/u:Administrator',
+        '/cert:ignore',
+        '/sec:rdp',
+        '/network:modem',
+        '+clipboard',
+        '-wallpaper',
+        '-themes',
+        '/size:1920x1080'
+    ]
+
+    try:
+        # 프로세스 실행 및 상태 확인
+        proc = subprocess.Popen(rdp_cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        time.sleep(1)
+
+        if proc.poll() is not None:
+            # 즉시 종료됨 - 오류 발생
+            stdout, stderr = proc.communicate()
+            print(colored_text('\n⚠️ FreeRDP 연결 오류:', Colors.WARNING))
+            if stderr:
+                error_lines = stderr.decode('utf-8', errors='ignore').split('\n')
+                for line in error_lines[-10:]:  # 마지막 10줄만 출력
+                    if line.strip():
+                        print(line)
+        else:
+            print(colored_text('✅ FreeRDP 창이 열렸습니다.', Colors.SUCCESS))
+    except Exception as e:
+        print(colored_text(f'\n❌ FreeRDP 실행 실패: {e}', Colors.ERROR))
 
 def check_iterm2():
     """iTerm2 설치 확인"""
@@ -1734,10 +1809,19 @@ def launch_terminal_session(command_list, use_iterm=True):
             capture_output=True, text=True
         ).stdout.strip() == 'true'
 
-        if not is_running:
-            # iTerm2가 실행 중이 아님 → open으로 실행하고 기본 세션에 명령 실행
+        # iTerm2 창 개수 확인
+        if is_running:
+            window_count_result = subprocess.run(
+                ['osascript', '-e', 'tell application "iTerm" to count windows'],
+                capture_output=True, text=True
+            )
+            window_count = int(window_count_result.stdout.strip()) if window_count_result.stdout.strip().isdigit() else 0
+        else:
+            window_count = 0
+
+        if not is_running or window_count == 0:
+            # iTerm2가 실행 중이 아니거나 창이 없음 → open으로 실행하고 기본 세션에 명령 실행
             subprocess.run(['open', '-a', 'iTerm'])
-            import time
             time.sleep(0.8)  # iTerm2가 완전히 시작될 때까지 대기
             applescript = f'''
             tell application "iTerm"
@@ -1747,7 +1831,7 @@ def launch_terminal_session(command_list, use_iterm=True):
             end tell
             '''
         else:
-            # iTerm2가 이미 실행 중 → 새 탭 추가
+            # iTerm2가 이미 실행 중이고 창이 있음 → 새 탭 추가
             applescript = f'''
             tell application "iTerm"
                 tell current window
@@ -2073,10 +2157,9 @@ def ec2_menu(manager: AWSManager, region: str):
                     rdp_started = True
                     local_port = 10000 + (int(inst['InstanceId'][-3:], 16) % 1000) + i
                     print(colored_text(f"\n(info) Windows 인스턴스 RDP 연결을 시작합니다 (localhost:{local_port})...", Colors.INFO))
-                    
+
                     proc = start_port_forward(manager.profile, inst_region, inst['InstanceId'], local_port)
                     procs.append(proc)
-                    time.sleep(2)
                     launch_rdp(local_port)
                 else:
                     print(colored_text(f"\n(info) Linux 인스턴스 SSM 연결을 시작합니다...", Colors.INFO))
