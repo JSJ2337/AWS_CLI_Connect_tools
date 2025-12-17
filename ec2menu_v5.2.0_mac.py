@@ -1778,11 +1778,6 @@ def launch_terminal_session(command_list, use_iterm=True):
     # shlex.quote()로 각 인자를 안전하게 이스케이프
     cmd_str = ' '.join(shlex.quote(arg) for arg in command_list)
 
-    # AppleScript 문자열 내부에서 사용할 수 있도록 이스케이프
-    # shlex.quote()가 이미 쉘 인젝션을 방지했으므로,
-    # AppleScript의 따옴표만 이스케이프 (백슬래시는 shlex가 이미 처리)
-    escaped_cmd = cmd_str.replace('"', '\\"')
-
     if use_iterm and check_iterm2():
         # iTerm2가 실행 중인지 확인
         is_running = subprocess.run(
@@ -1804,35 +1799,42 @@ def launch_terminal_session(command_list, use_iterm=True):
             # iTerm2가 실행 중이 아니거나 창이 없음 → open으로 실행하고 기본 세션에 명령 실행
             subprocess.run(['open', '-a', 'iTerm'])
             time.sleep(0.8)  # iTerm2가 완전히 시작될 때까지 대기
-            applescript = f'''
-            tell application "iTerm"
-                tell current session of current window
-                    write text "{escaped_cmd}"
-                end tell
-            end tell
-            '''
-        else:
-            # iTerm2가 이미 실행 중이고 창이 있음 → 새 탭 추가
-            applescript = f'''
-            tell application "iTerm"
-                tell current window
-                    create tab with default profile
-                    tell current session
-                        write text "{escaped_cmd}"
+            applescript = '''
+            on run argv
+                tell application "iTerm"
+                    tell current session of current window
+                        write text item 1 of argv
                     end tell
                 end tell
-            end tell
+            end run
             '''
-        subprocess.run(['osascript', '-e', applescript])
+            subprocess.run(['osascript', '-', cmd_str], input=applescript, text=True)
+        else:
+            # iTerm2가 이미 실행 중이고 창이 있음 → 새 탭 추가
+            applescript = '''
+            on run argv
+                tell application "iTerm"
+                    tell current window
+                        create tab with default profile
+                        tell current session
+                            write text item 1 of argv
+                        end tell
+                    end tell
+                end tell
+            end run
+            '''
+            subprocess.run(['osascript', '-', cmd_str], input=applescript, text=True)
     else:
         # Terminal.app 사용
-        applescript = f'''
-        tell application "Terminal"
-            activate
-            do script "{escaped_cmd}"
-        end tell
+        applescript = '''
+        on run argv
+            tell application "Terminal"
+                activate
+                do script item 1 of argv
+            end tell
+        end run
         '''
-        subprocess.run(['osascript', '-e', applescript])
+        subprocess.run(['osascript', '-', cmd_str], input=applescript, text=True)
 
 def launch_linux_wt(profile, region, iid):
     """리눅스 인스턴스에 새 터미널 탭으로 접속 (macOS용)"""
