@@ -1800,42 +1800,36 @@ def launch_terminal_session(command_list, use_iterm=True):
             # iTerm2가 실행 중이 아니거나 창이 없음 → open으로 실행하고 기본 세션에 명령 실행
             subprocess.run(['open', '-a', 'iTerm'])
             time.sleep(0.8)  # iTerm2가 완전히 시작될 때까지 대기
-            applescript = '''
-            on run argv
-                tell application "iTerm"
-                    tell current session of current window
-                        write text item 1 of argv
-                    end tell
+            applescript = f'''
+            tell application "iTerm"
+                tell current session of current window
+                    write text {cmd_str!r}
                 end tell
-            end run
+            end tell
             '''
-            subprocess.run(['osascript', '-', cmd_str], input=applescript, text=True)
+            subprocess.run(['osascript', '-e', applescript])
         else:
             # iTerm2가 이미 실행 중이고 창이 있음 → 새 탭 추가
-            applescript = '''
-            on run argv
-                tell application "iTerm"
-                    tell current window
-                        create tab with default profile
-                        tell current session
-                            write text item 1 of argv
-                        end tell
+            applescript = f'''
+            tell application "iTerm"
+                tell current window
+                    create tab with default profile
+                    tell current session
+                        write text {cmd_str!r}
                     end tell
                 end tell
-            end run
+            end tell
             '''
-            subprocess.run(['osascript', '-', cmd_str], input=applescript, text=True)
+            subprocess.run(['osascript', '-e', applescript])
     else:
         # Terminal.app 사용
-        applescript = '''
-        on run argv
-            tell application "Terminal"
-                activate
-                do script item 1 of argv
-            end tell
-        end run
+        applescript = f'''
+        tell application "Terminal"
+            activate
+            do script {cmd_str!r}
+        end tell
         '''
-        subprocess.run(['osascript', '-', cmd_str], input=applescript, text=True)
+        subprocess.run(['osascript', '-e', applescript])
 
 def launch_linux_wt(profile, region, iid):
     """리눅스 인스턴스에 새 터미널 탭으로 접속 (macOS용)"""
