@@ -38,6 +38,7 @@ import re
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Any
 import uuid
+import atexit
 
 import boto3
 from botocore.exceptions import ClientError, ProfileNotFound, NoCredentialsError
@@ -135,20 +136,22 @@ class PerformanceCache:
             self._cache.clear()
     
     def start_background_refresh(self, key: str, refresh_func, *args, **kwargs):
-        """백그라운드에서 캐시 새로고침"""
-        if key in self._background_refresh_active:
-            return
-        
+        """백그라운드에서 캐시 새로고침 (스레드 안전)"""
+        with self._lock:
+            if key in self._background_refresh_active:
+                return
+            self._background_refresh_active[key] = True
+
         def refresh_worker():
             try:
-                self._background_refresh_active[key] = True
                 new_data = refresh_func(*args, **kwargs)
                 self.set(key, new_data)
             except Exception as e:
                 logging.warning(f"백그라운드 새로고침 실패 ({key}): {e}")
             finally:
-                self._background_refresh_active.pop(key, None)
-        
+                with self._lock:
+                    self._background_refresh_active.pop(key, None)
+
         threading.Thread(target=refresh_worker, daemon=True).start()
 
 # 전역 캐시 인스턴스
@@ -194,6 +197,7 @@ DEFAULT_CACHE_MEMCACHED_CLI = os.environ.get('CACHE_MEMCACHED_CLI', "telnet")
 _stored_credentials = {}
 _sort_key = 'Name'  # 기본 정렬 키
 _sort_reverse = False  # 기본 오름차순
+_temp_files_to_cleanup = []  # 프로그램 종료 시 삭제할 임시 파일
 
 # ----------------------------------------------------------------------------
 # 로거 설정 (v4.40 수정)
@@ -204,6 +208,20 @@ def setup_logger(debug: bool):
     handlers = [logging.StreamHandler(sys.stdout), logging.FileHandler(LOG_PATH, encoding="utf-8")]
     # style='%'를 명시하여 boto3 내부 로그와의 충돌 방지
     logging.basicConfig(level=level, format=fmt, handlers=handlers, style='%')
+
+def cleanup_temp_files():
+    """프로그램 종료 시 임시 파일 정리"""
+    global _temp_files_to_cleanup
+    for file_path in _temp_files_to_cleanup:
+        try:
+            if file_path.exists():
+                file_path.unlink()
+                logging.info(f"임시 파일 삭제됨: {file_path}")
+        except Exception as e:
+            logging.warning(f"임시 파일 삭제 실패: {file_path} - {e}")
+
+# 프로그램 종료 시 자동 정리 등록
+atexit.register(cleanup_temp_files)
 
 # ----------------------------------------------------------------------------
 # 파일 전송 관리 (v5.1.3 신규)
@@ -249,6 +267,17 @@ class FileTransferManager:
                     CreateBucketConfiguration={'LocationConstraint': region}
                 )
             
+            # 공개 접근 차단 설정 (보안 강화)
+            s3.put_public_access_block(
+                Bucket=bucket_name,
+                PublicAccessBlockConfiguration={
+                    'BlockPublicAcls': True,
+                    'IgnorePublicAcls': True,
+                    'BlockPublicPolicy': True,
+                    'RestrictPublicBuckets': True
+                }
+            )
+
             # 수명 주기 정책 설정 (1일 후 자동 삭제)
             lifecycle_config = {
                 'Rules': [{
@@ -262,7 +291,7 @@ class FileTransferManager:
                 Bucket=bucket_name,
                 LifecycleConfiguration=lifecycle_config
             )
-            
+
             self.temp_bucket = bucket_name
             print(colored_text(f"✅ 임시 S3 버킷 생성: {bucket_name}", Colors.SUCCESS))
             return bucket_name
@@ -489,42 +518,44 @@ class FileTransferManager:
             return []
         
         print(colored_text(f"\n🚀 {len(instances)}개 인스턴스에 파일 전송 시작", Colors.INFO))
-        
+
         results = []
-        
-        # 병렬로 각 인스턴스에 다운로드
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(instances), 5)) as executor:
-            future_to_instance = {
-                executor.submit(
-                    self.download_file_from_s3_to_ec2, 
-                    s3_key, remote_path, 
-                    inst['raw']['InstanceId'], 
-                    inst['Name']
-                ): inst 
-                for inst in instances
-            }
-            
-            for future in concurrent.futures.as_completed(future_to_instance):
-                try:
-                    result = future.result()
-                    results.append(result)
-                    
-                    # 실시간 결과 출력
-                    status_color = Colors.SUCCESS if result.status == 'SUCCESS' else Colors.ERROR
-                    size_str = self._format_size(result.file_size) if result.file_size > 0 else ""
-                    print(f"{colored_text(result.status, status_color)} {result.instance_name} ({result.instance_id}) {size_str} - {result.transfer_time:.1f}s")
-                    
-                except Exception as e:
-                    instance = future_to_instance[future]
-                    print(colored_text(f"ERROR {instance['Name']} ({instance['raw']['InstanceId']}) - {str(e)}", Colors.ERROR))
-        
-        # S3 임시 파일 정리
-        self.cleanup_s3_file(s3_key)
-        
-        # 결과 저장
-        self.transfer_history.extend(results)
-        
-        return results
+
+        try:
+            # 병렬로 각 인스턴스에 다운로드
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(instances), 5)) as executor:
+                future_to_instance = {
+                    executor.submit(
+                        self.download_file_from_s3_to_ec2,
+                        s3_key, remote_path,
+                        inst['raw']['InstanceId'],
+                        inst['Name']
+                    ): inst
+                    for inst in instances
+                }
+
+                for future in concurrent.futures.as_completed(future_to_instance):
+                    try:
+                        result = future.result()
+                        results.append(result)
+
+                        # 실시간 결과 출력
+                        status_color = Colors.SUCCESS if result.status == 'SUCCESS' else Colors.ERROR
+                        size_str = self._format_size(result.file_size) if result.file_size > 0 else ""
+                        print(f"{colored_text(result.status, status_color)} {result.instance_name} ({result.instance_id}) {size_str} - {result.transfer_time:.1f}s")
+
+                    except Exception as e:
+                        instance = future_to_instance[future]
+                        print(colored_text(f"ERROR {instance['Name']} ({instance['raw']['InstanceId']}) - {str(e)}", Colors.ERROR))
+
+            # 결과 저장
+            self.transfer_history.extend(results)
+
+            return results
+
+        finally:
+            # 항상 S3 임시 파일 정리 (예외 발생 여부와 무관)
+            self.cleanup_s3_file(s3_key)
     
     def cleanup_s3_file(self, s3_key: str):
         """S3 임시 파일 삭제"""
@@ -698,20 +729,24 @@ class BatchJobManager:
                 
                 command_id = response['Command']['CommandId']
                 
-                # 명령 완료 대기
+                # 명령 완료 대기 (무한 루프 방지)
                 max_wait = timeout_seconds + 30
+                max_attempts = 200  # 최대 200회 확인 (약 10분)
                 waited = 0
-                while waited < max_wait:
+                attempt_count = 0
+
+                while waited < max_wait and attempt_count < max_attempts:
+                    attempt_count += 1
                     try:
                         result = ssm.get_command_invocation(
                             CommandId=command_id,
                             InstanceId=instance_id
                         )
-                        
+
                         status = result['Status']
                         if status in ['Success', 'Failed', 'Cancelled', 'TimedOut']:
                             execution_time = time.time() - start_time
-                            
+
                             return BatchJobResult(
                                 command=command,
                                 instance_id=instance_id,
@@ -722,16 +757,18 @@ class BatchJobManager:
                                 execution_time=execution_time,
                                 timestamp=datetime.now()
                             )
-                        
+
                         time.sleep(3)
                         waited += 3
-                        
+
                     except ClientError as e:
-                        if 'InvocationDoesNotExist' not in str(e):
-                            time.sleep(2)
-                            waited += 2
-                            continue
-                        break
+                        error_code = e.response.get('Error', {}).get('Code', '')
+                        if error_code == 'InvocationDoesNotExist':
+                            break  # 호출이 존재하지 않으면 종료
+                        # 다른 에러는 재시도
+                        time.sleep(2)
+                        waited += 2
+                        continue
                 
                 # 타임아웃
                 execution_time = time.time() - start_time
@@ -1010,27 +1047,38 @@ class AWSManager:
         try:
             ec2 = self.session.client('ec2', region_name=region)
             
-            # 모든 running 인스턴스 조회 (페이지네이션 처리)
+            # 모든 running 인스턴스 조회 (페이지네이션 처리, 무한 루프 방지)
             insts = []
             next_token = None
-            
-            while True:
+            seen_tokens = set()
+            max_pages = 100  # 안전장치: 최대 100페이지 (10,000개 인스턴스)
+
+            page_count = 0
+            while page_count < max_pages:
+                page_count += 1
                 params = {
                     'Filters': [{'Name':'instance-state-name','Values':['running']}],
                     'MaxResults': 100  # EC2 API 최대값
                 }
                 if next_token:
+                    if next_token in seen_tokens:
+                        logging.warning(f"페이지네이션 중복 토큰 감지, 종료 (region={region})")
+                        break
+                    seen_tokens.add(next_token)
                     params['NextToken'] = next_token
-                
+
                 resp = ec2.describe_instances(**params)
-                
+
                 for res in resp.get('Reservations', []):
                     for i in res.get('Instances', []):
                         insts.append(i)
-                
+
                 next_token = resp.get('NextToken')
                 if not next_token:
                     break
+
+            if page_count >= max_pages:
+                logging.warning(f"페이지네이션 제한 초과 (region={region}, pages={max_pages})")
                     
             return insts
         except ClientError as e:
@@ -1739,6 +1787,10 @@ username:s:Administrator
     # 파일 권한을 600으로 설정 (소유자만 읽기/쓰기)
     os.chmod(rdp_file, 0o600)
 
+    # atexit 정리 목록에 추가
+    global _temp_files_to_cleanup
+    _temp_files_to_cleanup.append(rdp_file)
+
     print(colored_text(f'\n📄 RDP 연결 파일 생성: {rdp_file}', Colors.INFO))
 
     try:
@@ -1759,13 +1811,15 @@ username:s:Administrator
             print(colored_text(f'   사용자: Administrator', Colors.INFO))
             return
     finally:
-        # .rdp 파일 즉시 삭제
+        # .rdp 파일 즉시 삭제 시도
         try:
             if rdp_file.exists():
                 rdp_file.unlink()
+                _temp_files_to_cleanup.remove(rdp_file)  # 정리 목록에서 제거
                 print(colored_text(f'🗑️  임시 RDP 파일 삭제됨', Colors.INFO))
-        except Exception:
-            pass  # 삭제 실패해도 무시 (임시 디렉토리는 재부팅 시 자동 삭제)
+        except Exception as e:
+            # 삭제 실패 시 경고 로그 기록 (atexit에서 재시도)
+            logging.warning(f"RDP 파일 즉시 삭제 실패 (프로그램 종료 시 재시도): {rdp_file} - {e}")
 
 def check_iterm2():
     """iTerm2 설치 확인"""
@@ -2154,6 +2208,12 @@ def ec2_menu(manager: AWSManager, region: str):
         if procs:
             for proc in procs:
                 proc.terminate()
+                try:
+                    proc.wait(timeout=5)  # 5초 대기
+                except subprocess.TimeoutExpired:
+                    logging.warning(f"프로세스 종료 타임아웃 (PID={proc.pid}), 강제 종료")
+                    proc.kill()
+                    proc.wait()  # 좀비 프로세스 방지
             print(colored_text("🔌 모든 RDP 포트 포워딩 연결을 종료했습니다.", Colors.SUCCESS))
 
 # ----------------------------------------------------------------------------
