@@ -47,20 +47,16 @@ pip install boto3 colorama
 ### 3. 선택 사항 (권장)
 
 #### iTerm2 설치 (더 나은 터미널 경험)
+
 ```bash
 brew install --cask iterm2
 ```
 
-#### FreeRDP 설치 (Windows RDP 접속용)
-```bash
-brew install freerdp
-```
+#### Windows RDP 클라이언트 (Windows 서버 접속용)
 
-#### XQuartz 설치 (FreeRDP 사용 시 필요)
-```bash
-brew install --cask xquartz
-# 설치 후 로그아웃 후 재로그인 필요
-```
+App Store에서 **"Microsoft Remote Desktop"** 또는 **"Windows App"** 설치 (무료)
+
+- 스크립트가 자동으로 .rdp 파일을 생성하여 연결
 
 ## 🚀 사용법
 
@@ -164,19 +160,15 @@ iTerm2가 없으면 자동으로 Terminal.app을 사용합니다.
 
 ## 🐛 문제 해결
 
-### FreeRDP 실행 시 "DISPLAY" 오류
+### Windows RDP 연결 문제
+
 ```bash
-# XQuartz 설치 확인
-brew list xquartz
+# RDP 클라이언트 설치 확인
+ls /Applications | grep -i "remote\|windows"
 
-# XQuartz 실행 확인
-ps aux | grep -i xquartz
-
-# XQuartz 수동 실행
-open -a XQuartz
-
-# 환경변수 설정 (.zshrc에 추가)
-export DISPLAY=:0
+# App Store에서 설치 권장:
+# - "Microsoft Remote Desktop" (무료)
+# - "Windows App" (무료, Microsoft 최신 버전)
 ```
 
 ### boto3 import 오류
@@ -212,9 +204,9 @@ sudo ./sessionmanager-bundle/install -i /usr/local/sessionmanagerplugin -b /usr/
 | 기능 | Windows (v5.1.9) | macOS (v5.2.0) |
 |------|------------------|----------------|
 | 터미널 | Windows Terminal (wt.exe) + WSL | iTerm2 / Terminal.app |
-| RDP 클라이언트 | mstsc.exe | FreeRDP (xfreerdp) |
+| RDP 클라이언트 | mstsc.exe | Windows App / Microsoft Remote Desktop |
 | 경로 처리 | WSL 경로 변환 (`D:\` → `/mnt/d/`) | pathlib 정규화 |
-| DB 도구 | HeidiSQL | mysql-cli, Sequel Ace 등 |
+| DB 도구 | HeidiSQL | DBeaver (자동 연결) |
 
 ### AWS IAM 권한 요구사항
 
