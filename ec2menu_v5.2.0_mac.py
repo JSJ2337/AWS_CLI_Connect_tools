@@ -215,6 +215,14 @@ class Config:
     # 히스토리 설정
     HISTORY_MAX_SIZE = 100
 
+    # 입력 재시도 설정
+    MAX_INPUT_RETRIES = 5  # 잘못된 입력 최대 5회까지 허용
+
+    # 대기 시간 설정 (초)
+    WAIT_PORT_READY = 2  # 포트 포워딩 준비 대기
+    WAIT_APP_LAUNCH = 0.8  # 애플리케이션 실행 대기
+    WAIT_RDP_READY = 2  # RDP 클라이언트 준비 대기
+
     # macOS용 도구 경로 (환경변수 우선)
     DB_TOOL_PATH = os.environ.get('DB_TOOL_PATH', "mysql")
     DBEAVER_PATH = os.environ.get('DBEAVER_PATH', '/Applications/DBeaver.app/Contents/MacOS/dbeaver')
@@ -286,6 +294,8 @@ class FileTransferManager:
         self.aws_manager = manager
         self.temp_bucket = None
         self.transfer_history: List[FileTransferResult] = []
+        # atexit에 버킷 정리 함수 등록
+        atexit.register(self.cleanup_temp_bucket)
     
     def get_or_create_temp_bucket(self):
         """임시 S3 버킷 생성 또는 기존 버킷 사용"""
@@ -522,7 +532,7 @@ class FileTransferManager:
                     waited += 3
                     
                 except ClientError:
-                    time.sleep(2)
+                    time.sleep(Config.WAIT_PORT_READY)
                     waited += 2
                     continue
             
@@ -620,7 +630,30 @@ class FileTransferManager:
                 print(colored_text("🗑️  S3 임시 파일 정리 완료", Colors.SUCCESS))
         except Exception as e:
             print(colored_text(f"⚠️  S3 파일 정리 실패: {str(e)}", Colors.WARNING))
-    
+
+    def cleanup_temp_bucket(self):
+        """프로그램 종료 시 임시 S3 버킷 삭제"""
+        if not self.temp_bucket:
+            return
+
+        try:
+            s3 = self.aws_manager.session.client('s3')
+
+            # 버킷 내 모든 객체 삭제
+            try:
+                objects = s3.list_objects_v2(Bucket=self.temp_bucket)
+                if 'Contents' in objects:
+                    for obj in objects['Contents']:
+                        s3.delete_object(Bucket=self.temp_bucket, Key=obj['Key'])
+            except Exception:
+                pass  # 객체가 없거나 이미 삭제됨
+
+            # 버킷 삭제
+            s3.delete_bucket(Bucket=self.temp_bucket)
+            logging.info(f"임시 S3 버킷 삭제됨: {self.temp_bucket}")
+        except Exception as e:
+            logging.warning(f"임시 S3 버킷 삭제 실패: {self.temp_bucket} - {e}")
+
     def _format_size(self, size_bytes: int) -> str:
         """바이트를 읽기 쉬운 형태로 변환"""
         if size_bytes == 0:
@@ -820,7 +853,7 @@ class BatchJobManager:
                         if error_code == 'InvocationDoesNotExist':
                             break  # 호출이 존재하지 않으면 종료
                         # 다른 에러는 재시도
-                        time.sleep(2)
+                        time.sleep(Config.WAIT_PORT_READY)
                         waited += 2
                         continue
                 
@@ -1476,7 +1509,8 @@ def choose_profile():
         print(f" {i:2d}) {p}")
     print("------------------------\n")
 
-    while True:
+    retry_count = 0
+    while retry_count < Config.MAX_INPUT_RETRIES:
         sel = input(colored_text("사용할 프로파일 번호 입력 (b=뒤로, Enter=종료): ", Colors.PROMPT))
         if not sel:
             sys.exit(0)
@@ -1484,7 +1518,13 @@ def choose_profile():
             sys.exit(0)  # 프로파일 선택이 첫 단계이므로 종료
         if sel.isdigit() and 1 <= int(sel) <= len(lst):
             return lst[int(sel) - 1]
-        print(colored_text("❌ 올바른 번호를 입력하세요.", Colors.ERROR))
+        retry_count += 1
+        remaining = Config.MAX_INPUT_RETRIES - retry_count
+        if remaining > 0:
+            print(colored_text(f"❌ 올바른 번호를 입력하세요. (남은 시도: {remaining}회)", Colors.ERROR))
+        else:
+            print(colored_text("❌ 최대 재시도 횟수 초과. 프로그램을 종료합니다.", Colors.ERROR))
+            sys.exit(1)
 
 def choose_region(manager: AWSManager):
     regs = manager.list_regions()
@@ -1511,7 +1551,8 @@ def choose_region(manager: AWSManager):
     print(f" {colored_text('99', Colors.INFO)}) 🌏 모든 리전 통합 뷰")
     print("--------------------------------\n")
 
-    while True:
+    retry_count = 0
+    while retry_count < Config.MAX_INPUT_RETRIES:
         sel = input(colored_text("사용할 리전 번호 입력 (Enter=뒤로): ", Colors.PROMPT))
         if not sel:
             return None
@@ -1519,7 +1560,13 @@ def choose_region(manager: AWSManager):
             return 'multi-region'
         if sel.isdigit() and 1 <= int(sel) <= len(valid_sorted):
             return valid_sorted[int(sel) - 1]
-        print(colored_text("❌ 올바른 번호를 입력하세요.", Colors.ERROR))
+        retry_count += 1
+        remaining = Config.MAX_INPUT_RETRIES - retry_count
+        if remaining > 0:
+            print(colored_text(f"❌ 올바른 번호를 입력하세요. (남은 시도: {remaining}회)", Colors.ERROR))
+        else:
+            print(colored_text("❌ 최대 재시도 횟수 초과. 메뉴로 돌아갑니다.", Colors.ERROR))
+            return None
 
 def choose_jump_host(manager, region):
     """사용자에게 SSM 관리 인스턴스(Jump Host)를 선택하게 합니다. Role=jumphost 태그가 있는 EC2만 표시합니다."""
@@ -1541,13 +1588,20 @@ def choose_jump_host(manager, region):
         print(f" {i:2d}) {target['Name']} ({target['Id']})")
     print("--------------------------------------------\n")
     
-    while True:
+    retry_count = 0
+    while retry_count < Config.MAX_INPUT_RETRIES:
         sel = input(colored_text("사용할 Jump Host 번호 입력 (b=뒤로): ", Colors.PROMPT))
         if sel.lower() == 'b':
             return None
         if sel.isdigit() and 1 <= int(sel) <= len(ssm_targets):
             return ssm_targets[int(sel) - 1]['Id']
-        print(colored_text("❌ 올바른 번호를 입력하세요.", Colors.ERROR))
+        retry_count += 1
+        remaining = Config.MAX_INPUT_RETRIES - retry_count
+        if remaining > 0:
+            print(colored_text(f"❌ 올바른 번호를 입력하세요. (남은 시도: {remaining}회)", Colors.ERROR))
+        else:
+            print(colored_text("❌ 최대 재시도 횟수 초과. 메뉴로 돌아갑니다.", Colors.ERROR))
+            return None
 
 def show_recent_connections():
     """최근 연결 목록을 표시하고 선택할 수 있게 합니다."""
@@ -1661,7 +1715,7 @@ def reconnect_to_instance(manager: AWSManager, entry: dict):
                 create_ssm_forward_command(manager.profile, region, tgt, 'AWS-StartPortForwardingSessionToRemoteHost', params),
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-            time.sleep(2)
+            time.sleep(Config.WAIT_PORT_READY)
 
             # DB 클라이언트 실행 (mysql, DBeaver 등)
             if DEFAULT_DB_TOOL_PATH and Path(DEFAULT_DB_TOOL_PATH).exists():
@@ -1719,7 +1773,7 @@ def reconnect_to_instance(manager: AWSManager, entry: dict):
                 create_ssm_forward_command(manager.profile, region, tgt, 'AWS-StartPortForwardingSessionToRemoteHost', params),
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             
-            time.sleep(2)
+            time.sleep(Config.WAIT_PORT_READY)
             
             print(colored_text(f"✅ 포트 포워딩이 활성화되었습니다.", Colors.SUCCESS))
             print(f"   Engine: {cluster['Engine']}")
@@ -1878,11 +1932,11 @@ username:s:Administrator
         if Path('/Applications/Windows App.app').exists():
             print(colored_text('✅ Windows App으로 연결합니다...', Colors.SUCCESS))
             subprocess.run(['open', '-a', 'Windows App', str(rdp_file)])
-            time.sleep(2)  # 앱이 파일을 읽을 시간 대기
+            time.sleep(Config.WAIT_PORT_READY)  # 앱이 파일을 읽을 시간 대기
         elif Path('/Applications/Microsoft Remote Desktop.app').exists():
             print(colored_text('✅ Microsoft Remote Desktop으로 연결합니다...', Colors.SUCCESS))
             subprocess.run(['open', '-a', 'Microsoft Remote Desktop', str(rdp_file)])
-            time.sleep(2)  # 앱이 파일을 읽을 시간 대기
+            time.sleep(Config.WAIT_PORT_READY)  # 앱이 파일을 읽을 시간 대기
         else:
             print(colored_text('\n⚠️ RDP 클라이언트가 설치되지 않았습니다.', Colors.WARNING))
             print(colored_text('\n권장: App Store에서 "Microsoft Remote Desktop" 설치', Colors.INFO))
@@ -1934,40 +1988,50 @@ def launch_terminal_session(command_list, use_iterm=True):
         else:
             window_count = 0
 
-        if not is_running or window_count == 0:
-            # iTerm2가 실행 중이 아니거나 창이 없음 → open으로 실행하고 기본 세션에 명령 실행
-            subprocess.run(['open', '-a', 'iTerm'])
-            time.sleep(0.8)  # iTerm2가 완전히 시작될 때까지 대기
-            applescript = f'''
-            tell application "iTerm"
-                tell current session of current window
-                    write text "{applescript_safe}"
-                end tell
-            end tell
-            '''
-            subprocess.run(['osascript', '-e', applescript])
-        else:
-            # iTerm2가 이미 실행 중이고 창이 있음 → 새 탭 추가
-            applescript = f'''
-            tell application "iTerm"
-                tell current window
-                    create tab with default profile
-                    tell current session
+        try:
+            if not is_running or window_count == 0:
+                # iTerm2가 실행 중이 아니거나 창이 없음 → open으로 실행하고 기본 세션에 명령 실행
+                subprocess.run(['open', '-a', 'iTerm'], check=True)
+                time.sleep(Config.WAIT_APP_LAUNCH)  # iTerm2가 완전히 시작될 때까지 대기
+                applescript = f'''
+                tell application "iTerm"
+                    tell current session of current window
                         write text "{applescript_safe}"
                     end tell
                 end tell
-            end tell
-            '''
-            subprocess.run(['osascript', '-e', applescript])
+                '''
+                subprocess.run(['osascript', '-e', applescript], check=True)
+            else:
+                # iTerm2가 이미 실행 중이고 창이 있음 → 새 탭 추가
+                applescript = f'''
+                tell application "iTerm"
+                    tell current window
+                        create tab with default profile
+                        tell current session
+                            write text "{applescript_safe}"
+                        end tell
+                    end tell
+                end tell
+                '''
+                subprocess.run(['osascript', '-e', applescript], check=True)
+        except subprocess.CalledProcessError as e:
+            logging.error(f"iTerm2 AppleScript 실행 실패: {e}")
+            print(colored_text(f"❌ iTerm2 실행 중 오류 발생. 수동으로 터미널을 열고 다음 명령을 실행하세요:", Colors.ERROR))
+            print(colored_text(f"   {cmd_str}", Colors.INFO))
     else:
         # Terminal.app 사용
-        applescript = f'''
-        tell application "Terminal"
-            activate
-            do script "{applescript_safe}"
-        end tell
-        '''
-        subprocess.run(['osascript', '-e', applescript])
+        try:
+            applescript = f'''
+            tell application "Terminal"
+                activate
+                do script "{applescript_safe}"
+            end tell
+            '''
+            subprocess.run(['osascript', '-e', applescript], check=True)
+        except subprocess.CalledProcessError as e:
+            logging.error(f"Terminal.app AppleScript 실행 실패: {e}")
+            print(colored_text(f"❌ Terminal.app 실행 중 오류 발생. 수동으로 터미널을 열고 다음 명령을 실행하세요:", Colors.ERROR))
+            print(colored_text(f"   {cmd_str}", Colors.INFO))
 
 def launch_linux_wt(profile, region, iid):
     """리눅스 인스턴스에 새 터미널 탭으로 접속 (macOS용)"""
@@ -2282,7 +2346,7 @@ def ec2_menu(manager: AWSManager, region: str):
                 input("\n[Press Enter to terminate all RDP connection processes]...\n")
                 break 
             else:
-                time.sleep(2)
+                time.sleep(Config.WAIT_PORT_READY)
 
     finally:
         if procs:
@@ -2408,7 +2472,7 @@ def ecs_menu(manager: AWSManager, region: str):
                     
                     launch_ecs_exec(manager.profile, region, cluster_name, selected_task['TaskArn'], container['Name'])
                     print(colored_text("✅ 새 터미널에서 ECS Exec 세션이 시작되었습니다.", Colors.SUCCESS))
-                    time.sleep(2)
+                    time.sleep(Config.WAIT_PORT_READY)
                 else:
                     # 여러 컨테이너가 있으면 선택
                     print(colored_text(f"\n--- [ Containers in Task ] ---", Colors.HEADER))
@@ -2436,7 +2500,7 @@ def ecs_menu(manager: AWSManager, region: str):
                     
                     launch_ecs_exec(manager.profile, region, cluster_name, selected_task['TaskArn'], selected_container['Name'])
                     print(colored_text("✅ 새 터미널에서 ECS Exec 세션이 시작되었습니다.", Colors.SUCCESS))
-                    time.sleep(2)
+                    time.sleep(Config.WAIT_PORT_READY)
 
 # ----------------------------------------------------------------------------
 # RDS 접속 (v5.0.2 원본 + 캐싱)
@@ -2526,7 +2590,7 @@ def connect_to_rds(manager: AWSManager, tool_path: str, region: str):
                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 procs.append(proc)
             
-            time.sleep(2)
+            time.sleep(Config.WAIT_PORT_READY)
 
             print(colored_text("\n✅ 모든 포트 포워딩 활성화. DBeaver로 자동 연결합니다...", Colors.SUCCESS))
 
@@ -2678,7 +2742,7 @@ def connect_to_cache(manager: AWSManager, region: str):
             proc = subprocess.Popen(
                 create_ssm_forward_command(manager.profile, cache_region, tgt, 'AWS-StartPortForwardingSessionToRemoteHost', params),
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            time.sleep(2)
+            time.sleep(Config.WAIT_PORT_READY)
             
             print(colored_text("\n✅ 포트 포워딩이 활성화되었습니다. 클라이언트에서 아래 주소로 접속하세요.", Colors.SUCCESS))
             print(f"   Engine: {c['Engine']}")
