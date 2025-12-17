@@ -159,12 +159,8 @@ _cache = PerformanceCache()
 # ----------------------------------------------------------------------------
 import platform
 
-def get_os_type():
-    """현재 OS 타입 반환: 'Windows', 'Darwin', 'Linux'"""
-    return platform.system()
-
 # 플랫폼 상수 (macOS 전용)
-IS_MAC = get_os_type() == 'Darwin'
+IS_MAC = platform.system() == 'Darwin'
 
 def normalize_file_path(path_str):
     """파일 경로 정규화 (따옴표 제거, 경로 확장)"""
@@ -884,10 +880,19 @@ def save_history(history):
     except Exception as e:
         logging.warning(f"히스토리 저장 실패: {e}")
 
+def invalidate_cache_for_service(manager, region, service_type):
+    """서비스 타입에 따라 캐시 무효화 (중복 제거용 헬퍼 함수)"""
+    if region == 'multi-region':
+        regions = manager.list_regions()
+        for r in regions:
+            _cache.invalidate(f"{service_type}_{manager.profile}_{r}")
+    else:
+        _cache.invalidate(f"{service_type}_{manager.profile}_{region}")
+
 def add_to_history(service_type, profile, region, instance_id, instance_name):
     """히스토리에 새 항목을 추가합니다."""
     history = load_history()
-    
+
     entry = {
         "profile": profile,
         "region": region,
@@ -895,10 +900,10 @@ def add_to_history(service_type, profile, region, instance_id, instance_name):
         "instance_name": instance_name,
         "timestamp": datetime.now().isoformat()
     }
-    
+
     # 중복 제거 (같은 인스턴스 ID)
     history[service_type] = [h for h in history[service_type] if h["instance_id"] != instance_id]
-    
+
     # 최신 항목을 맨 앞에 추가
     history[service_type].insert(0, entry)
     
@@ -1697,8 +1702,9 @@ def launch_rdp(port):
     print(colored_text(f'   사용자: Administrator', Colors.INFO))
     print(colored_text(f'   (비밀번호는 별도로 확인하세요)', Colors.WARNING))
 
-    # .rdp 파일 생성
-    rdp_file = f'/tmp/ec2menu_{port}.rdp'
+    # .rdp 파일 생성 (pathlib 사용)
+    import tempfile
+    rdp_file = Path(tempfile.gettempdir()) / f'ec2menu_{port}.rdp'
     rdp_content = f"""screen mode id:i:2
 desktopwidth:i:1920
 desktopheight:i:1080
@@ -1730,17 +1736,20 @@ username:s:Administrator
     with open(rdp_file, 'w') as f:
         f.write(rdp_content)
 
+    # 파일 권한을 600으로 설정 (소유자만 읽기/쓰기)
+    os.chmod(rdp_file, 0o600)
+
     print(colored_text(f'\n📄 RDP 연결 파일 생성: {rdp_file}', Colors.INFO))
 
     try:
         # Windows App 또는 Microsoft Remote Desktop으로 열기
         if Path('/Applications/Windows App.app').exists():
             print(colored_text('✅ Windows App으로 연결합니다...', Colors.SUCCESS))
-            subprocess.run(['open', '-a', 'Windows App', rdp_file])
+            subprocess.run(['open', '-a', 'Windows App', str(rdp_file)])
             time.sleep(2)  # 앱이 파일을 읽을 시간 대기
         elif Path('/Applications/Microsoft Remote Desktop.app').exists():
             print(colored_text('✅ Microsoft Remote Desktop으로 연결합니다...', Colors.SUCCESS))
-            subprocess.run(['open', '-a', 'Microsoft Remote Desktop', rdp_file])
+            subprocess.run(['open', '-a', 'Microsoft Remote Desktop', str(rdp_file)])
             time.sleep(2)  # 앱이 파일을 읽을 시간 대기
         else:
             print(colored_text('\n⚠️ RDP 클라이언트가 설치되지 않았습니다.', Colors.WARNING))
@@ -1752,10 +1761,11 @@ username:s:Administrator
     finally:
         # .rdp 파일 즉시 삭제
         try:
-            os.remove(rdp_file)
-            print(colored_text(f'🗑️  임시 RDP 파일 삭제됨', Colors.INFO))
+            if rdp_file.exists():
+                rdp_file.unlink()
+                print(colored_text(f'🗑️  임시 RDP 파일 삭제됨', Colors.INFO))
         except Exception:
-            pass  # 삭제 실패해도 무시 (/tmp는 재부팅 시 자동 삭제)
+            pass  # 삭제 실패해도 무시 (임시 디렉토리는 재부팅 시 자동 삭제)
 
 def check_iterm2():
     """iTerm2 설치 확인"""
@@ -1767,6 +1777,9 @@ def launch_terminal_session(command_list, use_iterm=True):
     import shlex
     # shlex.quote()로 각 인자를 안전하게 이스케이프
     cmd_str = ' '.join(shlex.quote(arg) for arg in command_list)
+
+    # AppleScript 인젝션 방지: 명령어 내부의 따옴표와 백슬래시 이스케이프
+    escaped_cmd = cmd_str.replace('\\', '\\\\').replace('"', '\\"')
 
     if use_iterm and check_iterm2():
         # iTerm2가 실행 중인지 확인
@@ -1792,7 +1805,7 @@ def launch_terminal_session(command_list, use_iterm=True):
             applescript = f'''
             tell application "iTerm"
                 tell current session of current window
-                    write text "{cmd_str}"
+                    write text "{escaped_cmd}"
                 end tell
             end tell
             '''
@@ -1803,7 +1816,7 @@ def launch_terminal_session(command_list, use_iterm=True):
                 tell current window
                     create tab with default profile
                     tell current session
-                        write text "{cmd_str}"
+                        write text "{escaped_cmd}"
                     end tell
                 end tell
             end tell
@@ -1814,7 +1827,7 @@ def launch_terminal_session(command_list, use_iterm=True):
         applescript = f'''
         tell application "Terminal"
             activate
-            do script "{cmd_str}"
+            do script "{escaped_cmd}"
         end tell
         '''
         subprocess.run(['osascript', '-e', applescript])
@@ -1930,12 +1943,7 @@ def ec2_menu(manager: AWSManager, region: str):
             elif sel == 'r':
                 print(colored_text("🔄 목록을 새로고침합니다...", Colors.INFO))
                 # 캐시 무효화 후 다음 루프에서 새로고침
-                if region == 'multi-region':
-                    regions = manager.list_regions()
-                    for r in regions:
-                        _cache.invalidate(f"instances_{manager.profile}_{r}")
-                else:
-                    _cache.invalidate(f"instances_{manager.profile}_{region}")
+                invalidate_cache_for_service(manager, region, "instances")
                 force_refresh = True
                 continue
             elif sel in ['n', 't', 's', 'r']:
@@ -2324,12 +2332,7 @@ def connect_to_rds(manager: AWSManager, tool_path: str, region: str):
         if sel == 'r':
             print(colored_text("🔄 목록을 새로고침합니다...", Colors.INFO))
             # 캐시 무효화
-            if region == 'multi-region':
-                regions = manager.list_regions()
-                for r in regions:
-                    _cache.invalidate(f"rds_{manager.profile}_{r}")
-            else:
-                _cache.invalidate(f"rds_{manager.profile}_{region}")
+            invalidate_cache_for_service(manager, region, "rds")
             continue
 
         try:
@@ -2384,8 +2387,8 @@ def connect_to_rds(manager: AWSManager, tool_path: str, region: str):
 
             print(colored_text("\n✅ 모든 포트 포워딩 활성화. DBeaver로 자동 연결합니다...", Colors.SUCCESS))
 
-            # DBeaver 자동 연결
-            dbeaver_path = "/Applications/DBeaver.app/Contents/MacOS/dbeaver"
+            # DBeaver 자동 연결 (환경변수 지원)
+            dbeaver_path = os.environ.get('DBEAVER_PATH', '/Applications/DBeaver.app/Contents/MacOS/dbeaver')
             if Path(dbeaver_path).exists():
                 for i, choice_idx in enumerate(valid_choices):
                     db = dbs[choice_idx - 1]
@@ -2497,12 +2500,7 @@ def connect_to_cache(manager: AWSManager, region: str):
         if sel == 'r':
             print(colored_text("🔄 목록을 새로고침합니다...", Colors.INFO))
             # 캐시 무효화
-            if region == 'multi-region':
-                regions = manager.list_regions()
-                for r in regions:
-                    _cache.invalidate(f"cache_{manager.profile}_{r}")
-            else:
-                _cache.invalidate(f"cache_{manager.profile}_{region}")
+            invalidate_cache_for_service(manager, region, "cache")
             continue
         
         if not sel.isdigit() or not (1 <= int(sel) <= len(clus)):
@@ -2572,6 +2570,12 @@ def connect_to_cache(manager: AWSManager, region: str):
 def main():
     global _stored_credentials
     
+    # macOS 플랫폼 체크
+    if not IS_MAC:
+        print(colored_text("❌ 이 스크립트는 macOS 전용입니다.", Colors.ERROR))
+        print(colored_text("   Windows/Linux용 버전을 사용해주세요.", Colors.INFO))
+        sys.exit(1)
+
     parser = argparse.ArgumentParser(description='AWS EC2/RDS/ElastiCache/ECS 연결 도구 v5.2.0 (macOS)')
     parser.add_argument('-p', '--profile', help='AWS 프로파일 이름')
     parser.add_argument('-d', '--debug', action='store_true', help='디버그 모드')
