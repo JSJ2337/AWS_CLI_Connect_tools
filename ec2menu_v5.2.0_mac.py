@@ -790,159 +790,179 @@ class BatchJobManager:
             instance_name = instance_data['Name']
             region = instance_data.get('Region', 'unknown')
 
-            start_time = time.time()
-            max_retries = Config.BATCH_COMMAND_RETRY  # 5회로 증가
+            max_retries = Config.BATCH_COMMAND_RETRY  # 3
+            ssm = self.aws_manager.session.client('ssm', region_name=region)
 
-            try:
-                ssm = self.aws_manager.session.client('ssm', region_name=region)
+            last_result = None
 
-                # 재시도 로직이 포함된 SSM Run Command 실행
-                response = None
-                last_error = None
+            # 전체 실행을 재시도
+            for attempt in range(max_retries + 1):
+                start_time = time.time()
 
-                for attempt in range(max_retries + 1):
-                    try:
-                        if attempt > 0:
-                            # 점진적 증가: 10초, 20초, 30초 (최대 60초)
-                            delay = min(Config.BATCH_RETRY_DELAY * attempt, Config.BATCH_RETRY_MAX_DELAY)
-                            print(colored_text(
-                                f"🔄 {instance_name} 재시도 {attempt}/{max_retries} (대기: {delay}초)",
-                                Colors.WARNING
-                            ))
-                            print(colored_text(
-                                f"   💡 SSM Agent 복구 또는 네트워크 안정화 대기 중...",
-                                Colors.INFO
-                            ))
-                            time.sleep(delay)
+                if attempt > 0:
+                    # 재시도 대기
+                    delay = min(Config.BATCH_RETRY_DELAY * attempt, Config.BATCH_RETRY_MAX_DELAY)
+                    print(colored_text(
+                        f"🔄 {instance_name} 재시도 {attempt}/{max_retries} (대기: {delay}초)",
+                        Colors.WARNING
+                    ))
+                    print(colored_text(
+                        f"   💡 SSM Agent 복구 또는 네트워크 안정화 대기 중...",
+                        Colors.INFO
+                    ))
+                    time.sleep(delay)
 
-                        response = ssm.send_command(
-                            InstanceIds=[instance_id],
-                            DocumentName='AWS-RunShellScript',
-                            Parameters={
-                                'commands': [command],
-                                'executionTimeout': [str(timeout_seconds)]
-                            },
-                            TimeoutSeconds=timeout_seconds + 30
-                        )
-
-                        # 명령 전송 성공
-                        if attempt > 0:
-                            print(colored_text(f"✅ {instance_name} 재시도 성공!", Colors.SUCCESS))
-                        break  # 성공 시 루프 탈출
-
-                    except ClientError as e:
-                        last_error = e
-                        error_code = e.response.get('Error', {}).get('Code', '')
-                        error_msg = str(e)
-
-                        # 재시도 가능한 오류 확인 (더 많은 경우 추가)
-                        retryable_errors = [
-                            'Throttling',
-                            'ThrottledException',
-                            'ServiceUnavailable',
-                            'InternalServerError',
-                            'RequestTimeout',
-                            'InvalidInstanceId',  # SSM Agent 일시적 문제
-                            'TargetNotConnected',  # 네트워크 일시 단절
-                        ]
-
-                        if error_code in retryable_errors or 'timed out' in error_msg.lower():
-                            if attempt < max_retries:
-                                print(colored_text(
-                                    f"⚠️  {instance_name}: {error_code} - 재시도 예정",
-                                    Colors.WARNING
-                                ))
-                                continue
-                        else:
-                            # 재시도 불가능한 오류는 즉시 실패
-                            print(colored_text(
-                                f"❌ {instance_name}: 재시도 불가능 오류 - {error_code}",
-                                Colors.ERROR
-                            ))
-                            break
-
-                if not response:
-                    # 모든 재시도 실패
-                    execution_time = time.time() - start_time
-                    return BatchJobResult(
-                        command=command,
-                        instance_id=instance_id,
-                        instance_name=instance_name,
-                        status='FAILED',
-                        output='',
-                        error=f'명령 전송 실패 (재시도 {max_retries + 1}회): {str(last_error)}',
-                        execution_time=execution_time,
-                        timestamp=datetime.now()
+                try:
+                    # 1. 명령 전송
+                    response = ssm.send_command(
+                        InstanceIds=[instance_id],
+                        DocumentName='AWS-RunShellScript',
+                        Parameters={
+                            'commands': [command],
+                            'executionTimeout': [str(timeout_seconds)]
+                        },
+                        TimeoutSeconds=timeout_seconds + 30
                     )
-                
-                command_id = response['Command']['CommandId']
-                
-                # 명령 완료 대기 (무한 루프 방지)
-                max_wait = timeout_seconds + 30
-                max_attempts = 200  # 최대 200회 확인 (약 10분)
-                waited = 0
-                attempt_count = 0
 
-                while waited < max_wait and attempt_count < max_attempts:
-                    attempt_count += 1
-                    try:
-                        result = ssm.get_command_invocation(
-                            CommandId=command_id,
-                            InstanceId=instance_id
+                    command_id = response['Command']['CommandId']
+
+                    # 2. 결과 대기 (기존 로직 유지)
+                    max_wait = timeout_seconds + 30
+                    max_attempts = 200
+                    waited = 0
+                    attempt_count = 0
+
+                    while waited < max_wait and attempt_count < max_attempts:
+                        attempt_count += 1
+                        try:
+                            result = ssm.get_command_invocation(
+                                CommandId=command_id,
+                                InstanceId=instance_id
+                            )
+                            status = result['Status']
+
+                            if status in ['Success', 'Failed', 'Cancelled', 'TimedOut']:
+                                execution_time = time.time() - start_time
+
+                                if status == 'Success':
+                                    output = result.get('StandardOutputContent', '').strip()
+                                    if attempt > 0:
+                                        print(colored_text(f"✅ {instance_name} 재시도 성공!", Colors.SUCCESS))
+                                    return BatchJobResult(
+                                        command=command,
+                                        instance_id=instance_id,
+                                        instance_name=instance_name,
+                                        status='SUCCESS',
+                                        output=output,
+                                        error='',
+                                        execution_time=execution_time,
+                                        timestamp=datetime.now()
+                                    )
+                                else:
+                                    # Failed, Cancelled, TimedOut
+                                    error = result.get('StandardErrorContent', '') or result.get('StatusDetails', '')
+
+                                    # 재시도 가능한 오류인지 확인
+                                    if attempt < max_retries:
+                                        print(colored_text(
+                                            f"⚠️  {instance_name}: {status} - 재시도 예정",
+                                            Colors.WARNING
+                                        ))
+                                        # 현재 시도 실패, 다음 시도로 break
+                                        raise Exception(f"Command {status}: {error}")
+                                    else:
+                                        # 최종 실패
+                                        return BatchJobResult(
+                                            command=command,
+                                            instance_id=instance_id,
+                                            instance_name=instance_name,
+                                            status='FAILED',
+                                            output='',
+                                            error=error,
+                                            execution_time=execution_time,
+                                            timestamp=datetime.now()
+                                        )
+
+                            # 아직 실행 중
+                            time.sleep(3)
+                            waited += 3
+
+                        except ClientError as e:
+                            error_code = e.response.get('Error', {}).get('Code', '')
+                            if error_code == 'InvocationDoesNotExist':
+                                # 명령이 아직 시작 안됨
+                                time.sleep(2)
+                                waited += 2
+                                continue
+                            else:
+                                # 다른 에러는 재시도
+                                time.sleep(Config.WAIT_PORT_READY)
+                                waited += 2
+                                continue
+
+                    # 타임아웃 발생 - 재시도 가능
+                    if attempt < max_retries:
+                        print(colored_text(
+                            f"⚠️  {instance_name}: 타임아웃 - 재시도 예정",
+                            Colors.WARNING
+                        ))
+                        # 다음 시도로
+                        continue
+                    else:
+                        # 최종 타임아웃
+                        execution_time = time.time() - start_time
+                        return BatchJobResult(
+                            command=command,
+                            instance_id=instance_id,
+                            instance_name=instance_name,
+                            status='TIMEOUT',
+                            output='',
+                            error=f'Command timed out after {max_wait} seconds',
+                            execution_time=execution_time,
+                            timestamp=datetime.now()
                         )
 
-                        status = result['Status']
-                        if status in ['Success', 'Failed', 'Cancelled', 'TimedOut']:
-                            execution_time = time.time() - start_time
-
-                            return BatchJobResult(
-                                command=command,
-                                instance_id=instance_id,
-                                instance_name=instance_name,
-                                status='SUCCESS' if status == 'Success' else 'FAILED',
-                                output=result.get('StandardOutputContent', ''),
-                                error=result.get('StandardErrorContent', ''),
-                                execution_time=execution_time,
-                                timestamp=datetime.now()
-                            )
-
-                        time.sleep(3)
-                        waited += 3
-
-                    except ClientError as e:
-                        error_code = e.response.get('Error', {}).get('Code', '')
-                        if error_code == 'InvocationDoesNotExist':
-                            break  # 호출이 존재하지 않으면 종료
-                        # 다른 에러는 재시도
-                        time.sleep(Config.WAIT_PORT_READY)
-                        waited += 2
+                except ClientError as e:
+                    # send_command 실패
+                    error_code = e.response.get('Error', {}).get('Code', '')
+                    if attempt < max_retries:
+                        print(colored_text(
+                            f"⚠️  {instance_name}: {error_code} - 재시도 예정",
+                            Colors.WARNING
+                        ))
                         continue
-                
-                # 타임아웃
-                execution_time = time.time() - start_time
-                return BatchJobResult(
-                    command=command,
-                    instance_id=instance_id,
-                    instance_name=instance_name,
-                    status='TIMEOUT',
-                    output='',
-                    error=f'Command timed out after {max_wait} seconds (timeout: {timeout_seconds}s + buffer: 30s)',
-                    execution_time=execution_time,
-                    timestamp=datetime.now()
-                )
-                
-            except ClientError as e:
-                execution_time = time.time() - start_time
-                return BatchJobResult(
-                    command=command,
-                    instance_id=instance_id,
-                    instance_name=instance_name,
-                    status='FAILED',
-                    output='',
-                    error=str(e),
-                    execution_time=execution_time,
-                    timestamp=datetime.now()
-                )
+                    else:
+                        execution_time = time.time() - start_time
+                        return BatchJobResult(
+                            command=command,
+                            instance_id=instance_id,
+                            instance_name=instance_name,
+                            status='FAILED',
+                            output='',
+                            error=str(e),
+                            execution_time=execution_time,
+                            timestamp=datetime.now()
+                        )
+                except Exception as e:
+                    # 기타 오류 - 재시도
+                    if attempt < max_retries:
+                        print(colored_text(
+                            f"⚠️  {instance_name}: {str(e)} - 재시도 예정",
+                            Colors.WARNING
+                        ))
+                        continue
+                    else:
+                        execution_time = time.time() - start_time
+                        return BatchJobResult(
+                            command=command,
+                            instance_id=instance_id,
+                            instance_name=instance_name,
+                            status='FAILED',
+                            output='',
+                            error=str(e),
+                            execution_time=execution_time,
+                            timestamp=datetime.now()
+                        )
         
         # 배치 크기 제한으로 안정성 향상 (최대 5개씩 동시 실행)
         max_concurrent = min(len(validated_instances), 5)
