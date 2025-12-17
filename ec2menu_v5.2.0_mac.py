@@ -1523,9 +1523,10 @@ def choose_profile() -> str:
         remaining = Config.MAX_INPUT_RETRIES - retry_count
         if remaining > 0:
             print(colored_text(f"❌ 올바른 번호를 입력하세요. (남은 시도: {remaining}회)", Colors.ERROR))
-        else:
-            print(colored_text("❌ 최대 재시도 횟수 초과. 프로그램을 종료합니다.", Colors.ERROR))
-            sys.exit(1)
+
+    # 최대 재시도 횟수 초과
+    print(colored_text("❌ 최대 재시도 횟수 초과. 프로그램을 종료합니다.", Colors.ERROR))
+    sys.exit(1)
 
 def choose_region(manager: AWSManager) -> Optional[str]:
     """AWS 리전 선택 (str 또는 None 반환)"""
@@ -1566,9 +1567,10 @@ def choose_region(manager: AWSManager) -> Optional[str]:
         remaining = Config.MAX_INPUT_RETRIES - retry_count
         if remaining > 0:
             print(colored_text(f"❌ 올바른 번호를 입력하세요. (남은 시도: {remaining}회)", Colors.ERROR))
-        else:
-            print(colored_text("❌ 최대 재시도 횟수 초과. 메뉴로 돌아갑니다.", Colors.ERROR))
-            return None
+
+    # 최대 재시도 횟수 초과
+    print(colored_text("❌ 최대 재시도 횟수 초과. 메뉴로 돌아갑니다.", Colors.ERROR))
+    return None
 
 def choose_jump_host(manager: AWSManager, region: str) -> Optional[str]:
     """사용자에게 SSM 관리 인스턴스(Jump Host)를 선택하게 합니다. Role=jumphost 태그가 있는 EC2만 표시합니다."""
@@ -1601,9 +1603,10 @@ def choose_jump_host(manager: AWSManager, region: str) -> Optional[str]:
         remaining = Config.MAX_INPUT_RETRIES - retry_count
         if remaining > 0:
             print(colored_text(f"❌ 올바른 번호를 입력하세요. (남은 시도: {remaining}회)", Colors.ERROR))
-        else:
-            print(colored_text("❌ 최대 재시도 횟수 초과. 메뉴로 돌아갑니다.", Colors.ERROR))
-            return None
+
+    # 최대 재시도 횟수 초과
+    print(colored_text("❌ 최대 재시도 횟수 초과. 메뉴로 돌아갑니다.", Colors.ERROR))
+    return None
 
 def show_recent_connections():
     """최근 연결 목록을 표시하고 선택할 수 있게 합니다."""
