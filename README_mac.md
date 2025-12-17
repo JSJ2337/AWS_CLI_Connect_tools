@@ -184,6 +184,7 @@ ls /Applications | grep -i "remote\|windows"
 ```
 
 ### boto3 import 오류
+
 ```bash
 # Python 버전 확인
 python3 --version
@@ -196,6 +197,7 @@ pip3 install --break-system-packages --force-reinstall boto3
 ```
 
 ### AWS CLI 오류
+
 ```bash
 # AWS CLI 설치 확인
 which aws
@@ -223,6 +225,7 @@ sudo ./sessionmanager-bundle/install -i /usr/local/sessionmanagerplugin -b /usr/
 ### AWS IAM 권한 요구사항
 
 EC2 인스턴스가 S3 파일 전송을 사용하려면 다음 권한 필요:
+
 ```json
 {
   "Version": "2012-10-17",

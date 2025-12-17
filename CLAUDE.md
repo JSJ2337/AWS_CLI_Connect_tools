@@ -8,7 +8,7 @@ AWS EC2 인스턴스 관리 CLI 도구 및 웹 버전. SSM 터미널, RDS 연결
 
 ## Project Structure
 
-```
+```text
 ec2menu_script/
 ├── ec2menu_v5.2.0_mac.py  # CLI 최신 버전 (macOS 전용)
 ├── ec2menu_v*.py          # 버전별 히스토리
@@ -78,7 +78,7 @@ docker-compose up -d --build
 
 ## Web Version Architecture
 
-```
+```text
 Frontend (React + Vite)
     ↓ HTTP/WebSocket
 Backend (FastAPI)
