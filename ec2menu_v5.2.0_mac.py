@@ -4,50 +4,21 @@
 EC2, RDS, ElastiCache, ECS 접속 자동화 스크립트 v5.2.0 (macOS 전용)
 
 v5.2.0 macOS 버전:
-- 🍎 macOS 네이티브 지원
-- 🖥️ iTerm2 터미널 통합
-- 🔌 FreeRDP 클라이언트 지원 (Windows RDP 접속)
-- 🗑️ WSL 관련 코드 제거
+- 🍎 macOS 네이티브 지원 (pathlib 경로 처리)
+- 🖥️ iTerm2/Terminal.app 통합 (새 탭에서 자동 접속)
+- 🪟 Windows App을 통한 RDP 접속 (.rdp 파일 자동 생성)
+- 🗑️ WSL/Windows 관련 코드 제거
 
-기존 기능 (v5.1.x):
+주요 기능:
 - 📁 S3 경유 파일 전송: 대용량 파일 (80MB+) 업로드/다운로드
 - 🚀 배치 작업: 여러 인스턴스에 동시 명령 실행
 - 📊 진행률 표시: 실시간 전송 상태 및 속도
 - 🎨 컬러 테마: 상태별 색깔 구분 (running=녹색, stopped=빨강)
-
-v5.1.6 디버깅 버전:
-- 🔍 경로 처리 디버깅: 입력된 경로와 처리 과정 상세 출력
-
-v5.1.5 개선 사항:
-- 🔧 따옴표 제거 로직 수정: 드래그앤드롭 시 따옴표 정상 처리
-
-v5.1.4 개선 사항:
-- 🛠️ Windows 경로 처리 개선: 백슬래시 경로 정상 인식
-- 📁 pathlib.Path 사용: 더 안정적인 파일 경로 처리
-
-v5.1.3 기능 유지:
-- 📁 S3 경유 파일 전송: 대용량 파일 (80MB+) 업로드/다운로드 지원
-- 🚀 배치 파일 전송: 여러 인스턴스에 동시 파일 배포
-- 📊 진행률 표시: 실시간 전송 상태 및 속도 표시
-- 🏃 향상된 응답 속도: 목록 로딩 시간 대폭 단축, 메모리 사용량 최적화
-
-v5.0.2 기능 유지:
-- 🎨 컬러 테마 적용 (상태별 색깔 구분: running=녹색, stopped=빨강 등)
-- 📊 테이블 정렬 기능 (이름, 타입, 리전별 정렬)
-- 🐳 ECS Fargate 컨테이너 접속 지원 (ECS Exec 활용)
-
-v5.0.1 기능 유지:
-- DB 비밀번호 세션 중 임시 저장 (메모리에만 저장, 스크립트 종료 시 삭제)
-- 멀티 리전 통합 뷰 지원 (여러 리전의 인스턴스를 한 번에 조회)
-- 연결 히스토리 기능 (최근 접속한 인스턴스 기록 및 빠른 재접속)
-
-기존 기능 유지:
-- v4.40에서 실수로 변경되었던 리눅스 인스턴스 접속 로직(`launch_linux_wt`)
-  WSL을 정상적으로 호출하도록 이전 버전(v4.39)으로 복원.
-- 로깅 오류 수정 사항은 그대로 유지.
-- f-string 문법 오류 수정 (json.dumps 사용)
-- RDS/ElastiCache 점프 호스트 선택 시 Role=jumphost 태그가 있는 EC2만 자동으로 표시
-  점프 호스트로 사용할 EC2에 'Role=jumphost' 태그를 미리 추가해두세요
+- 🗄️ 멀티 리전 통합 뷰 (여러 리전의 인스턴스 한 번에 조회)
+- 📜 연결 히스토리 (최근 접속한 인스턴스 기록 및 빠른 재접속)
+- 🐳 ECS Fargate 컨테이너 접속 (ECS Exec 활용)
+- 🔑 DB 비밀번호 세션 임시 저장 (메모리만, 종료 시 삭제)
+- 🏃 Role=jumphost 태그 기반 점프 호스트 자동 선택
 """
 import os
 import sys
@@ -67,7 +38,6 @@ import re
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Any
 import uuid
-import base64
 
 import boto3
 from botocore.exceptions import ClientError, ProfileNotFound, NoCredentialsError
@@ -75,7 +45,7 @@ from botocore.exceptions import ClientError, ProfileNotFound, NoCredentialsError
 # 컬러 지원 라이브러리
 try:
     from colorama import init, Fore, Back, Style
-    init(autoreset=True)  # Windows 호환성
+    init(autoreset=True)  # 색상 자동 리셋
     COLOR_SUPPORT = True
 except ImportError:
     print("💡 더 나은 사용자 경험을 위해 colorama를 설치하세요: pip install colorama")
@@ -193,10 +163,8 @@ def get_os_type():
     """현재 OS 타입 반환: 'Windows', 'Darwin', 'Linux'"""
     return platform.system()
 
-# 플랫폼 상수
+# 플랫폼 상수 (macOS 전용)
 IS_MAC = get_os_type() == 'Darwin'
-IS_WINDOWS = get_os_type() == 'Windows'
-IS_LINUX = get_os_type() == 'Linux'
 
 def normalize_file_path(path_str):
     """파일 경로 정규화 (따옴표 제거, 경로 확장)"""
@@ -1546,10 +1514,10 @@ def reconnect_to_instance(manager: AWSManager, entry: dict):
             if not tgt:
                 return
             
-            # 포트 포워딩 및 HeidiSQL 실행
+            # 포트 포워딩 및 DB 클라이언트 실행
             local_port = 11000
             print(colored_text(f"🔹 포트 포워딩: [localhost:{local_port}] -> [{db['DBInstanceIdentifier']}:{db['Endpoint']['Port']}]", Colors.INFO))
-            
+
             params_dict = {
                 "host": [db["Endpoint"]["Address"]],
                 "portNumber": [str(db["Endpoint"]["Port"])],
@@ -1559,26 +1527,26 @@ def reconnect_to_instance(manager: AWSManager, entry: dict):
             proc = subprocess.Popen(
                 create_ssm_forward_command(manager.profile, region, tgt, 'AWS-StartPortForwardingSessionToRemoteHost', params),
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            
+
             time.sleep(2)
-            
-            # HeidiSQL 실행
+
+            # DB 클라이언트 실행 (mysql, DBeaver 등)
             if DEFAULT_DB_TOOL_PATH and Path(DEFAULT_DB_TOOL_PATH).exists():
                 network_type_map = {
-                    'postgres': 'postgresql', 'mysql': 'mysql', 
+                    'postgres': 'postgresql', 'mysql': 'mysql',
                     'mariadb': 'mariadb', 'sqlserver': 'mssql',
                 }
                 network_type = next((v for k, v in network_type_map.items() if k in db['Engine']), 'mysql')
-                
+
                 command = [
-                    DEFAULT_DB_TOOL_PATH, f"--description={db['DBInstanceIdentifier']}", f"-n={network_type}", 
+                    DEFAULT_DB_TOOL_PATH, f"--description={db['DBInstanceIdentifier']}", f"-n={network_type}",
                     f"-h=localhost", f"-P={local_port}", f"-u={db_user}", f"-p={db_password}",
                 ]
                 if db.get('DBName'):
                     command.append(f"-d={db['DBName']}")
-                
+
                 subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                print(colored_text("✅ HeidiSQL이 실행되었습니다.", Colors.SUCCESS))
+                print(colored_text("✅ DB 클라이언트가 실행되었습니다.", Colors.SUCCESS))
             
             print("(완료되면 이 창에서 Enter 키를 눌러 연결을 종료합니다)")
             input("[Press Enter to terminate connection]...\n")
@@ -2075,9 +2043,9 @@ def ec2_menu(manager: AWSManager, region: str):
                     
                     # 파일 경로 입력
                     print(colored_text("\n📁 파일 선택 방법:", Colors.INFO))
-                    print("  1) 직접 입력: C:\\Users\\user\\Documents\\file.txt")
+                    print("  1) 직접 입력: /Users/username/Documents/file.txt")
                     print("  2) 드래그 앤 드롭: 파일을 이 창으로 끌어오기")
-                    print("  3) 복사 붙여넣기: 탐색기에서 '경로 복사' 후 Ctrl+V")
+                    print("  3) 복사 붙여넣기: Finder에서 Option+Cmd+C로 경로 복사 후 Cmd+V")
                     
                     local_path = input(colored_text("\n업로드할 로컬 파일 경로 (b=뒤로): ", Colors.PROMPT)).strip()
                     if not local_path:
