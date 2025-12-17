@@ -1779,6 +1779,10 @@ def launch_terminal_session(command_list, use_iterm=True):
     # shlex.quote()로 공백/특수문자 포함 인자를 적절히 보호
     cmd_str = ' '.join(shlex.quote(arg) for arg in command_list)
 
+    # AppleScript 문자열 리터럴용 이스케이프
+    # AppleScript에서는 문자열 내부의 작은따옴표를 ''로 이스케이프
+    applescript_safe = cmd_str.replace("'", "''")
+
     if use_iterm and check_iterm2():
         # iTerm2가 실행 중인지 확인
         is_running = subprocess.run(
@@ -1803,7 +1807,7 @@ def launch_terminal_session(command_list, use_iterm=True):
             applescript = f'''
             tell application "iTerm"
                 tell current session of current window
-                    write text {cmd_str!r}
+                    write text '{applescript_safe}'
                 end tell
             end tell
             '''
@@ -1815,7 +1819,7 @@ def launch_terminal_session(command_list, use_iterm=True):
                 tell current window
                     create tab with default profile
                     tell current session
-                        write text {cmd_str!r}
+                        write text '{applescript_safe}'
                     end tell
                 end tell
             end tell
@@ -1826,7 +1830,7 @@ def launch_terminal_session(command_list, use_iterm=True):
         applescript = f'''
         tell application "Terminal"
             activate
-            do script {cmd_str!r}
+            do script '{applescript_safe}'
         end tell
         '''
         subprocess.run(['osascript', '-e', applescript])
