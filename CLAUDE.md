@@ -126,6 +126,36 @@ security: DB 비밀번호 마스킹 처리
 - [ ] 파일 전송 테스트
 - [ ] 멀티 리전 전환 테스트
 
+### Documentation Standards
+
+문서 작성 시 다음 Markdown Lint 규칙을 준수해야 합니다:
+
+**필수 규칙:**
+
+- **MD022**: 헤딩 앞뒤에 빈 줄 추가
+- **MD031**: 코드 블록 앞뒤에 빈 줄 추가
+- **MD032**: 리스트 앞뒤에 빈 줄 추가
+- **MD040**: 코드 블록에 언어 지정 (`` ```bash ``, `` ```python ``, `` ```text ``)
+
+**권장 사항:**
+
+- **MD024**: 중복 헤딩 방지 (같은 레벨에서 동일한 제목 사용 금지)
+- **MD036**: 강조 대신 헤딩 사용 (`**텍스트**` 대신 `### 텍스트`)
+
+**검증 방법:**
+
+```bash
+# markdownlint 설치 (Node.js 필요)
+npm install -g markdownlint-cli
+
+# 문서 검증
+markdownlint README_mac.md
+markdownlint work_history_v5.2.0_mac.md
+
+# 자동 수정 (가능한 경우)
+markdownlint --fix README_mac.md
+```
+
 ## Work History
 
 작업 기록은 `work_history_v5.2.0_mac.md` 참조
