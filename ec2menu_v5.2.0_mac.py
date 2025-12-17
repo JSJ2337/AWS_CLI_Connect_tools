@@ -199,8 +199,9 @@ class Config:
 
     # 배치 작업 설정
     BATCH_MAX_RETRIES = 3  # SSM 명령 전송 재시도 횟수
-    BATCH_COMMAND_RETRY = 5  # 명령 실행 실패 시 재시도 횟수
-    BATCH_RETRY_DELAY = 3  # 재시도 간 대기 시간 (초)
+    BATCH_COMMAND_RETRY = 3  # 명령 실행 실패 시 재시도 횟수 (5 → 3)
+    BATCH_RETRY_DELAY = 10  # 재시도 간 기본 대기 시간 (3초 → 10초)
+    BATCH_RETRY_MAX_DELAY = 60  # 최대 대기 시간 (초)
     BATCH_TIMEOUT_SECONDS = 600  # 10분
     BATCH_MAX_WAIT_ATTEMPTS = 200
     BATCH_CONCURRENT_JOBS = 5  # 동시 실행 수 (기본 모드)
@@ -802,10 +803,15 @@ class BatchJobManager:
                 for attempt in range(max_retries + 1):
                     try:
                         if attempt > 0:
-                            delay = Config.BATCH_RETRY_DELAY * attempt  # 재시도 간 대기 (3초, 6초, 9초, ...)
+                            # 점진적 증가: 10초, 20초, 30초 (최대 60초)
+                            delay = min(Config.BATCH_RETRY_DELAY * attempt, Config.BATCH_RETRY_MAX_DELAY)
                             print(colored_text(
                                 f"🔄 {instance_name} 재시도 {attempt}/{max_retries} (대기: {delay}초)",
                                 Colors.WARNING
+                            ))
+                            print(colored_text(
+                                f"   💡 SSM Agent 복구 또는 네트워크 안정화 대기 중...",
+                                Colors.INFO
                             ))
                             time.sleep(delay)
 
@@ -956,10 +962,46 @@ class BatchJobManager:
                     instance = future_to_instance[future]
                     print(colored_text(f"ERROR {instance['Name']} ({instance['raw']['InstanceId']}) - {str(e)}", Colors.ERROR))
         
+        # 결과 요약 출력
+        success_count = sum(1 for r in results if r.status == 'SUCCESS')
+        failed_count = len(results) - success_count
+
+        print(colored_text(f"\n📊 총 {len(results)}개 인스턴스 - 성공: {success_count}, 실패: {failed_count}", Colors.INFO))
+
+        # 실패한 인스턴스 재시도 옵션 제공
+        if failed_count > 0:
+            failed_instances = [
+                next(inst for inst in validated_instances
+                     if inst['raw']['InstanceId'] == r.instance_id)
+                for r in results if r.status != 'SUCCESS'
+            ]
+
+            print(colored_text(f"\n⚠️  {failed_count}개 인스턴스에서 명령 실행이 실패했습니다.", Colors.WARNING))
+            retry_choice = input(colored_text("실패한 인스턴스만 다시 시도하시겠습니까? (y/N): ", Colors.PROMPT)).strip().lower()
+
+            if retry_choice == 'y':
+                print(colored_text(f"\n🔄 실패한 {failed_count}개 인스턴스를 다시 시도합니다...", Colors.INFO))
+                print(colored_text("💡 더 긴 대기 시간으로 재시도합니다.", Colors.INFO))
+
+                # 재시도 결과
+                retry_results = self.execute_batch_command(failed_instances, command, timeout_seconds)
+
+                # 원본 결과에서 실패한 것을 재시도 결과로 교체
+                for retry_result in retry_results:
+                    for i, r in enumerate(results):
+                        if r.instance_id == retry_result.instance_id:
+                            results[i] = retry_result
+                            break
+
+                # 최종 결과 재계산
+                success_count = sum(1 for r in results if r.status == 'SUCCESS')
+                failed_count = len(results) - success_count
+                print(colored_text(f"\n✅ 재시도 완료 - 성공: {success_count}, 실패: {failed_count}", Colors.SUCCESS))
+
         # 결과 저장
         self.results_history.extend(results)
         self.save_results_history()
-        
+
         return results
     
     def show_batch_results(self, results: List[BatchJobResult]):
