@@ -2679,7 +2679,7 @@ def connect_to_rds(manager: AWSManager, tool_path: str, region: str):
                     print(colored_text(f"      호스트: localhost", Colors.INFO))
                     print(colored_text(f"      포트: {local_port}", Colors.INFO))
                     print(colored_text(f"      사용자: {db_user}", Colors.INFO))
-                    print(colored_text(f"      비밀번호: {db_password}", Colors.INFO))
+                    print(colored_text(f"      비밀번호: {'*' * 8}", Colors.INFO))  # 보안: 비밀번호 마스킹
                     if db.get('DBName'):
                         print(colored_text(f"      데이터베이스: {db['DBName']}", Colors.INFO))
                 print(colored_text(f"\n💡 DBeaver를 설치하면 자동 연결이 가능합니다.", Colors.INFO))
