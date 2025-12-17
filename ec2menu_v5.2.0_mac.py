@@ -1774,9 +1774,10 @@ def check_iterm2():
 
 def launch_terminal_session(command_list, use_iterm=True):
     """macOS에서 새 터미널 탭에서 명령 실행 (iTerm2 또는 Terminal.app)"""
-    import shlex
-    # shlex.quote()로 각 인자를 안전하게 이스케이프
-    cmd_str = ' '.join(shlex.quote(arg) for arg in command_list)
+    # 명령어 리스트를 문자열로 결합
+    # iTerm2/Terminal의 write text/do script는 문자열을 그대로 쉘에 전달하므로
+    # shlex.quote()를 사용하지 않고 공백으로만 결합
+    cmd_str = ' '.join(command_list)
 
     if use_iterm and check_iterm2():
         # iTerm2가 실행 중인지 확인
