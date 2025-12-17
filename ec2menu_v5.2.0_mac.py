@@ -56,7 +56,6 @@ import configparser
 import concurrent.futures
 import logging
 import readline
-import shutil
 import subprocess
 import time
 import threading
@@ -1716,18 +1715,7 @@ def wait_for_port(port, timeout=30):
     return False
 
 def launch_rdp(port):
-    """macOS에서 FreeRDP로 RDP 접속"""
-    # xfreerdp 경로 확인
-    xfreerdp_path = shutil.which('xfreerdp')
-
-    if not xfreerdp_path:
-        print(colored_text('\n⚠️ FreeRDP가 설치되지 않았습니다.', Colors.WARNING))
-        print(colored_text('\n설치 방법:', Colors.INFO))
-        print(colored_text('   1. brew install freerdp', Colors.INFO))
-        print(colored_text('   2. brew install --cask xquartz (필요 시)', Colors.INFO))
-        print(colored_text('   3. 로그아웃 후 재로그인', Colors.INFO))
-        return
-
+    """macOS에서 RDP 접속 - Windows App 사용"""
     # 포트가 준비될 때까지 대기
     print(colored_text(f'⏳ 포트 {port}가 준비될 때까지 대기 중...', Colors.INFO))
     if not wait_for_port(port):
@@ -1736,60 +1724,70 @@ def launch_rdp(port):
 
     print(colored_text('✅ 포트가 준비되었습니다.', Colors.SUCCESS))
 
-    # XQuartz 실행 확인 및 시작
-    xquartz_running = subprocess.run(
-        ['pgrep', '-x', 'Xquartz'],
-        capture_output=True
-    ).returncode == 0
-
-    if not xquartz_running:
-        print(colored_text('🔧 XQuartz를 시작합니다...', Colors.INFO))
-        subprocess.run(['open', '-a', 'XQuartz'])
-        time.sleep(2)  # XQuartz 초기화 대기
-
     print(colored_text(f'\n📊 RDP 연결 정보:', Colors.HEADER))
     print(colored_text(f'   호스트: localhost:{port}', Colors.INFO))
     print(colored_text(f'   사용자: Administrator', Colors.INFO))
     print(colored_text(f'   (비밀번호는 별도로 확인하세요)', Colors.WARNING))
 
-    # FreeRDP로 직접 연결 (SSM 포트 포워딩 최적화)
-    print(colored_text(f'\n✅ FreeRDP로 연결합니다...', Colors.SUCCESS))
-    print(colored_text('   (SSM 터널 최적화 모드)', Colors.INFO))
+    # .rdp 파일 생성
+    rdp_file = f'/tmp/ec2menu_{port}.rdp'
+    rdp_content = f"""screen mode id:i:2
+desktopwidth:i:1920
+desktopheight:i:1080
+session bpp:i:32
+compression:i:1
+keyboardhook:i:2
+displayconnectionbar:i:1
+disable wallpaper:i:1
+disable full window drag:i:1
+disable menu anims:i:1
+disable themes:i:0
+disable cursor setting:i:0
+bitmapcachepersistenable:i:1
+full address:s:localhost:{port}
+audiomode:i:0
+redirectprinters:i:0
+redirectcomports:i:0
+redirectsmartcards:i:0
+redirectclipboard:i:1
+redirectposdevices:i:0
+autoreconnection enabled:i:1
+authentication level:i:0
+prompt for credentials:i:0
+negotiate security layer:i:1
+remoteapplicationmode:i:0
+username:s:Administrator
+"""
 
-    env = os.environ.copy()
-    env['DISPLAY'] = ':0'
+    with open(rdp_file, 'w') as f:
+        f.write(rdp_content)
 
-    rdp_cmd = [
-        'xfreerdp',
-        f'/v:localhost:{port}',
-        '/u:Administrator',
-        '/cert:ignore',
-        '/sec:rdp',
-        '/network:modem',
-        '+clipboard',
-        '-wallpaper',
-        '-themes',
-        '/size:1920x1080'
-    ]
+    print(colored_text(f'\n📄 RDP 연결 파일 생성: {rdp_file}', Colors.INFO))
 
     try:
-        # 프로세스 실행 및 상태 확인
-        proc = subprocess.Popen(rdp_cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        time.sleep(1)
-
-        if proc.poll() is not None:
-            # 즉시 종료됨 - 오류 발생
-            stdout, stderr = proc.communicate()
-            print(colored_text('\n⚠️ FreeRDP 연결 오류:', Colors.WARNING))
-            if stderr:
-                error_lines = stderr.decode('utf-8', errors='ignore').split('\n')
-                for line in error_lines[-10:]:  # 마지막 10줄만 출력
-                    if line.strip():
-                        print(line)
+        # Windows App 또는 Microsoft Remote Desktop으로 열기
+        if Path('/Applications/Windows App.app').exists():
+            print(colored_text('✅ Windows App으로 연결합니다...', Colors.SUCCESS))
+            subprocess.run(['open', '-a', 'Windows App', rdp_file])
+            time.sleep(2)  # 앱이 파일을 읽을 시간 대기
+        elif Path('/Applications/Microsoft Remote Desktop.app').exists():
+            print(colored_text('✅ Microsoft Remote Desktop으로 연결합니다...', Colors.SUCCESS))
+            subprocess.run(['open', '-a', 'Microsoft Remote Desktop', rdp_file])
+            time.sleep(2)  # 앱이 파일을 읽을 시간 대기
         else:
-            print(colored_text('✅ FreeRDP 창이 열렸습니다.', Colors.SUCCESS))
-    except Exception as e:
-        print(colored_text(f'\n❌ FreeRDP 실행 실패: {e}', Colors.ERROR))
+            print(colored_text('\n⚠️ RDP 클라이언트가 설치되지 않았습니다.', Colors.WARNING))
+            print(colored_text('\n권장: App Store에서 "Microsoft Remote Desktop" 설치', Colors.INFO))
+            print(colored_text(f'\n수동 연결 정보:', Colors.INFO))
+            print(colored_text(f'   호스트: localhost:{port}', Colors.INFO))
+            print(colored_text(f'   사용자: Administrator', Colors.INFO))
+            return
+    finally:
+        # .rdp 파일 즉시 삭제
+        try:
+            os.remove(rdp_file)
+            print(colored_text(f'🗑️  임시 RDP 파일 삭제됨', Colors.INFO))
+        except Exception:
+            pass  # 삭제 실패해도 무시 (/tmp는 재부팅 시 자동 삭제)
 
 def check_iterm2():
     """iTerm2 설치 확인"""
