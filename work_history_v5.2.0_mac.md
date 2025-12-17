@@ -25,11 +25,12 @@
 
 #### 작업 내용
 
-**1. P1-8: Python 3.9 호환성 개선**
+### P1-8: Python 3.9 호환성 개선
+
 - `from __future__ import annotations` 추가
 - 이전 Python 버전 타입 힌팅 호환성 확보
 
-**2. P3-19: Import 문 재정리 (PEP 8 준수)**
+### P3-19: Import 문 재정리 (PEP 8 준수)
 
 ```python
 # 표준 라이브러리
@@ -42,7 +43,7 @@ import boto3
 from botocore.exceptions import ClientError
 ```
 
-**3. P1-4: Thread Safety 개선**
+### P1-4: Thread Safety 개선
 
 ```python
 _temp_files_to_cleanup: list[Path] = []
@@ -52,7 +53,7 @@ with _temp_files_lock:
     _temp_files_to_cleanup.append(rdp_file)
 ```
 
-**4. P1-1: 세션 유효성 검사 추가**
+### P1-1: 세션 유효성 검사 추가
 
 ```python
 def cleanup_temp_bucket(self):
@@ -62,7 +63,7 @@ def cleanup_temp_bucket(self):
         return
 ```
 
-**5. P1-6: DB 비밀번호 마스킹 (보안)**
+### P1-6: DB 비밀번호 마스킹 (보안)
 
 ```python
 # 변경 전
@@ -72,13 +73,15 @@ print(f"비밀번호: {db_password}")
 print(f"비밀번호: {'*' * 8}")  # 보안: 비밀번호 마스킹
 ```
 
-**6. P1-2, P1-5, P2-9~P2-18: Task 에이전트를 통한 일괄 적용**
+### P1-2, P1-5, P2-9~P2-18: Task 에이전트를 통한 일괄 적용
+
 - Config 클래스 패턴 적용
 - 매직 넘버 제거
 - 코드 중복 제거 (DRY 원칙)
 - 에러 핸들링 개선
 
 #### 커밋 내역
+
 ```bash
 # 1차 커밋
 git commit -m "refactor: P1 보안 및 안정성 개선 (1차)"
@@ -94,7 +97,7 @@ git commit -m "refactor: P1 + P2 안정성 및 품질 개선 완료"
 
 #### 문제 상황
 
-**사용자 테스트 결과:**
+### 사용자 테스트 결과
 
 ```text
 총 11개 인스턴스 테스트:
@@ -103,25 +106,28 @@ git commit -m "refactor: P1 + P2 안정성 및 품질 개선 완료"
 - 실패 원인: 0.5초 타임아웃 (간헐적 네트워크 문제)
 ```
 
-**사용자 요구사항:**
+### 사용자 요구사항
 
 > "기본모드가 좋은거같아 다만 연결에 문제가 생겼을시 재시도 횟수를 늘리거나 연결시도를 계속 하거나 하는게 있어야 할거같다"
 
 #### 해결 과정
 
-**Phase 1: 재시도 설정 추가**
+### Phase 1: 재시도 설정 추가
 
 ```python
 # Config 클래스에 추가
 BATCH_COMMAND_RETRY = 5  # 2 → 5
 BATCH_RETRY_DELAY = 3     # 신규
 ```
+
 - 재시도 횟수 증가
 - Exponential backoff: 3s, 6s, 9s, 12s, 15s
 
-**결과:** 사용자 피드백 "이거 재시도를 너무 빨리하는건가... 너무 순식간에 끝나고 실패율은 비슷해.."
+### 결과
 
-**Phase 2: 대기 시간 증가 + 수동 재시도 옵션**
+사용자 피드백 "이거 재시도를 너무 빨리하는건가... 너무 순식간에 끝나고 실패율은 비슷해.."
+
+### Phase 2: 대기 시간 증가 + 수동 재시도 옵션
 
 ```python
 BATCH_RETRY_DELAY = 10          # 3초 → 10초
@@ -135,17 +141,19 @@ if failed_count > 0:
         retry_results = self.execute_batch_command(failed_instances, command)
 ```
 
-**결과:** 수동 재시도는 성공했지만, 사용자가 관찰: "그냥 내가볼때 그냥 재시도를 안하는거 같은데..."
+### 결과
 
-**Phase 3: 재시도 로직 완전 재작성 (근본 해결)**
+수동 재시도는 성공했지만, 사용자가 관찰: "그냥 내가볼때 그냥 재시도를 안하는거 같은데..."
 
-**문제 원인 발견:**
+### Phase 3: 재시도 로직 완전 재작성 (근본 해결)
+
+### 문제 원인 발견
 
 - 기존 재시도 로직은 `send_command()` 실패만 처리
 - 실제 타임아웃은 `get_command_invocation()` 대기 중 발생
 - 0.5초 타임아웃 = 명령 전송 자체 실패인데 재시도 안됨
 
-**해결 방법:**
+### 해결 방법
 
 ```python
 def execute_on_instance(instance_data, retry_count=0):
@@ -203,7 +211,7 @@ def execute_on_instance(instance_data, retry_count=0):
                 return BatchJobResult(status='FAILED', ...)
 ```
 
-**핵심 변경:**
+### 핵심 변경
 
 - 명령 전송 + 결과 대기 + 응답 파싱을 **전체** 재시도 루프로 감쌈
 - 모든 실패 시나리오에서 재시도 트리거
@@ -251,7 +259,7 @@ git commit -m "fix: 배치 작업 재시도 로직 완전 수정
 
 #### 테스트 결과
 
-**사용자 피드백:**
+### 사용자 피드백
 
 > "좋아 잘된다."
 > "좋아 정상동작하네..."
@@ -298,7 +306,7 @@ class Config:
     BATCH_CONCURRENT_JOBS = 5          # 동시 실행 수 (기본 모드)
 ```
 
-**재시도 전략:**
+### 재시도 전략
 
 - 1차 실패 → 10초 대기 → 재시도
 - 2차 실패 → 20초 대기 → 재시도

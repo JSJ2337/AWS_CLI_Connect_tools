@@ -5,12 +5,14 @@ AWS EC2/RDS/ElastiCache/ECS 접속 자동화 스크립트 (macOS 전용)
 ## 🍎 macOS 전용 기능
 
 ### v5.2.0 신규 기능
+
 - **iTerm2/Terminal.app 통합**: 새 터미널 탭에서 자동으로 접속
 - **FreeRDP 지원**: Windows 인스턴스에 RDP 접속
 - **경로 정규화**: macOS 네이티브 파일 경로 처리
 - **WSL 코드 제거**: 깔끔한 macOS 전용 코드베이스
 
 ### 기존 기능 유지
+
 - S3 경유 대용량 파일 전송 (80MB+)
 - 배치 작업 (여러 인스턴스 동시 명령 실행)
 - 멀티 리전 지원
@@ -104,32 +106,38 @@ export CACHE_MEMCACHED_CLI="telnet"
 ## 📋 주요 기능
 
 ### 1. EC2 인스턴스 접속
+
 - **Linux 인스턴스**: SSM Session Manager로 접속
 - **Windows 인스턴스**: RDP 포트 포워딩 후 FreeRDP로 접속
 - **iTerm2/Terminal.app**: 새 탭에서 자동으로 접속
 
 ### 2. 파일 전송
+
 - **S3 경유 전송**: 대용량 파일 (80MB+) 안전 전송
 - **배치 전송**: 여러 인스턴스에 동시 배포
 - **진행률 표시**: 실시간 전송 상태 확인
 
 ### 3. 배치 작업
+
 - 여러 인스턴스에 동시에 명령 실행
 - SSM Run Command 활용
 - 실행 결과 수집 및 표시
 
 ### 4. RDS/ElastiCache 접속
+
 - 점프 호스트 자동 선택 (Role=jumphost 태그)
 - 포트 포워딩 자동 설정
 - 로컬 클라이언트 자동 실행
 
 ### 5. ECS Fargate 컨테이너 접속
+
 - ECS Exec을 통한 컨테이너 쉘 접속
 - 새 터미널 탭에서 실행
 
 ## 🎯 사용 예시
 
 ### EC2 Linux 인스턴스 접속
+
 1. 스크립트 실행
 2. AWS 프로파일 선택
 3. 리전 선택
@@ -138,12 +146,14 @@ export CACHE_MEMCACHED_CLI="telnet"
 6. iTerm2/Terminal.app 새 탭에서 자동 접속
 
 ### Windows 인스턴스 RDP 접속
+
 1. EC2 메뉴에서 Windows 인스턴스 선택
 2. 자동으로 RDP 포트 포워딩 시작
 3. FreeRDP가 자동으로 실행됨
 4. Administrator 계정으로 로그인
 
 ### 파일 전송
+
 1. EC2 메뉴에서 `f. 파일 업로드` 선택
 2. 로컬 파일 경로 입력 (드래그앤드롭 가능)
 3. 원격 경로 입력 (예: `/tmp/myfile.zip`)
@@ -153,9 +163,11 @@ export CACHE_MEMCACHED_CLI="telnet"
 ## ⚙️ macOS 터미널 설정
 
 ### iTerm2를 기본 터미널로 사용
+
 스크립트는 iTerm2가 설치되어 있으면 자동으로 사용합니다.
 
 ### Terminal.app 사용
+
 iTerm2가 없으면 자동으로 Terminal.app을 사용합니다.
 
 ## 🐛 문제 해결
@@ -241,12 +253,14 @@ EC2 인스턴스가 S3 파일 전송을 사용하려면 다음 권한 필요:
 ## 📝 버전 히스토리
 
 ### v5.2.0 (2025-12-17) - macOS 버전
+
 - 🍎 macOS 네이티브 지원
 - 🖥️ iTerm2/Terminal.app 통합
 - 🔌 FreeRDP 클라이언트 지원
 - 🗑️ WSL 관련 코드 제거
 
 ### v5.1.9 (Windows 버전)
+
 - 🔍 SSM 명령 디버깅
 - 🛠️ AWS CLI 설치 확인
 - 📝 전송 과정 로그 출력
