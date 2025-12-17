@@ -33,6 +33,7 @@ import os
 import platform
 import re
 import readline
+import socket
 import subprocess
 import sys
 import threading
@@ -84,13 +85,13 @@ class Colors:
     PROMPT = Fore.CYAN
     RESET = Style.RESET_ALL
 
-def colored_text(text, color=""):
+def colored_text(text: str, color: str = "") -> str:
     """색깔 적용된 텍스트 반환"""
     if COLOR_SUPPORT and color:
         return f"{color}{text}{Colors.RESET}"
     return text
 
-def get_status_color(status):
+def get_status_color(status: str) -> str:
     """상태에 따른 색깔 반환"""
     status_lower = status.lower()
     if status_lower in ['running', 'available', 'active']:
@@ -169,7 +170,7 @@ _cache = PerformanceCache()
 # 플랫폼 상수 (macOS 전용)
 IS_MAC = platform.system() == 'Darwin'
 
-def normalize_file_path(path_str):
+def normalize_file_path(path_str: str) -> str:
     """파일 경로 정규화 (따옴표 제거, 경로 확장)"""
     # 따옴표 제거
     if (path_str.startswith('"') and path_str.endswith('"')) or \
@@ -208,8 +209,11 @@ class Config:
 
     # 포트 설정
     PORT_RANGE_START = 10000
-    PORT_RANGE_END = 19999
+    PORT_RANGE_END = 11000
     RDS_PORT_START = 11000
+
+    # 파일 크기 변환
+    BYTES_PER_KB = 1024
 
     # SSM 설정
     SSM_TIMEOUT_SECONDS = 600
@@ -251,6 +255,14 @@ _sort_key = 'Name'  # 기본 정렬 키
 _sort_reverse = False  # 기본 오름차순
 _temp_files_to_cleanup: list[Path] = []  # 프로그램 종료 시 삭제할 임시 파일
 _temp_files_lock = threading.Lock()  # 동시성 보호
+
+# ----------------------------------------------------------------------------
+# 유틸리티 함수
+# ----------------------------------------------------------------------------
+def calculate_local_port(instance_id: str) -> int:
+    """인스턴스 ID로부터 고유한 로컬 포트 번호 생성"""
+    id_hash = int(instance_id[-3:], 16) % (Config.PORT_RANGE_END - Config.PORT_RANGE_START)
+    return Config.PORT_RANGE_START + id_hash
 
 # ----------------------------------------------------------------------------
 # 로거 설정 (v4.40 수정)
@@ -674,9 +686,9 @@ class FileTransferManager:
             return "0B"
         size_float = float(size_bytes)
         for unit in ['B', 'KB', 'MB', 'GB']:
-            if size_float < 1024.0:
+            if size_float < Config.BYTES_PER_KB:
                 return f"{size_float:.1f}{unit}"
-            size_float /= 1024.0
+            size_float /= Config.BYTES_PER_KB
         return f"{size_float:.1f}TB"
     
     def _format_speed(self, bytes_per_sec: float) -> str:
@@ -1236,22 +1248,33 @@ class AWSManager:
         
         try:
             ssm = self.session.client('ssm', region_name=region)
-            
+
             # 모든 SSM 관리 인스턴스 조회 (페이지네이션 처리)
             info = []
             next_token = None
-            
-            while True:
+            max_pages = Config.MAX_PAGINATION_PAGES
+            page_count = 0
+            seen_tokens = set()
+
+            while page_count < max_pages:
+                page_count += 1
                 params = {'MaxResults': 50}  # AWS 기본값보다 크게 설정
                 if next_token:
+                    if next_token in seen_tokens:
+                        logging.warning(f"SSM 페이지네이션 중복 토큰 감지")
+                        break
+                    seen_tokens.add(next_token)
                     params['NextToken'] = next_token
-                
+
                 response = ssm.describe_instance_information(**params)
                 info.extend(response.get('InstanceInformationList', []))
-                
+
                 next_token = response.get('NextToken')
                 if not next_token:
                     break
+
+            if page_count >= max_pages:
+                logging.warning(f"SSM 페이지네이션 제한 초과")
             
             instance_ids = [i['InstanceId'] for i in info]
             if not instance_ids:
@@ -1683,7 +1706,7 @@ def reconnect_to_instance(manager: AWSManager, entry: dict):
             # Windows/Linux 판단하여 접속
             if instance.get('PlatformDetails', 'Linux').lower().startswith('windows'):
                 # Windows RDP 접속
-                local_port = 10000 + (int(instance_id[-3:], 16) % 1000)
+                local_port = calculate_local_port(instance_id)
                 print(colored_text(f"(info) Windows 인스턴스 RDP 연결을 시작합니다 (localhost:{local_port})...", Colors.INFO))
 
                 proc = start_port_forward(manager.profile, region, instance_id, local_port)
@@ -1873,7 +1896,6 @@ def start_port_forward(profile, region, iid, port):
 
 def wait_for_port(port, timeout=30):
     """포트가 LISTEN 상태가 될 때까지 대기"""
-    import socket
     start_time = time.time()
     while time.time() - start_time < timeout:
         try:
@@ -1883,8 +1905,8 @@ def wait_for_port(port, timeout=30):
             sock.close()
             if result == 0:
                 return True
-        except:
-            pass
+        except (socket.error, socket.timeout, OSError) as e:
+            logging.debug(f"포트 {port} 대기 중 예외: {e}")
         time.sleep(0.5)
     return False
 
@@ -2196,15 +2218,8 @@ def ec2_menu(manager: AWSManager, region: str):
                         continue
                         
                     # Linux 인스턴스만 필터링
-                    selected_instances = []
-                    for choice_idx in valid_choices:
-                        inst_data = insts[choice_idx - 1]
-                        inst = inst_data['raw']
-                        if not inst.get('PlatformDetails', 'Linux').lower().startswith('windows'):
-                            selected_instances.append(inst_data)
-                        else:
-                            print(colored_text(f"⚠ Windows 인스턴스 {inst_data['Name']}는 배치 작업에서 제외됩니다.", Colors.WARNING))
-                    
+                    selected_instances = filter_linux_instances(insts, valid_choices, region)
+
                     if not selected_instances:
                         print(colored_text("❌ 배치 작업할 Linux 인스턴스가 없습니다.", Colors.ERROR))
                         continue
@@ -2251,18 +2266,8 @@ def ec2_menu(manager: AWSManager, region: str):
                         continue
                         
                     # Linux 인스턴스만 필터링
-                    selected_instances = []
-                    for choice_idx in valid_choices:
-                        inst_data = insts[choice_idx - 1]
-                        inst = inst_data['raw']
-                        if not inst.get('PlatformDetails', 'Linux').lower().startswith('windows'):
-                            # 리전 정보 추가
-                            if 'Region' not in inst_data:
-                                inst_data['Region'] = inst.get('_region', region)
-                            selected_instances.append(inst_data)
-                        else:
-                            print(colored_text(f"⚠️  Windows 인스턴스는 파일 전송 미지원: {inst_data['Name']}", Colors.WARNING))
-                    
+                    selected_instances = filter_linux_instances(insts, valid_choices, region)
+
                     if not selected_instances:
                         print(colored_text("❌ 파일 전송 가능한 Linux 인스턴스가 없습니다.", Colors.ERROR))
                         continue
@@ -2287,14 +2292,18 @@ def ec2_menu(manager: AWSManager, region: str):
                     # 경로 정규화 (macOS용)
                     local_path = normalize_file_path(local_path)
 
-                    # 파일 존재 확인
+                    # 파일 존재 확인 및 크기 확인
                     local_path_obj = Path(local_path)
                     if not local_path_obj.exists():
                         print(colored_text(f"❌ 파일이 존재하지 않습니다: {local_path}", Colors.ERROR))
                         continue
-                    
-                    # 파일 크기 확인
-                    file_size = os.path.getsize(local_path)
+
+                    # 파일 크기 확인 (TOCTOU 개선)
+                    try:
+                        file_size = local_path_obj.stat().st_size
+                    except OSError as e:
+                        print(colored_text(f"❌ 파일 접근 실패: {local_path} - {e}", Colors.ERROR))
+                        continue
                     print(colored_text(f"📊 파일 크기: {file_transfer_manager._format_size(file_size)}", Colors.INFO))
                     
                     remote_path = input(colored_text("대상 EC2 경로 (b=뒤로): ", Colors.PROMPT)).strip()
@@ -2351,7 +2360,7 @@ def ec2_menu(manager: AWSManager, region: str):
                 
                 if inst.get('PlatformDetails', 'Linux').lower().startswith('windows'):
                     rdp_started = True
-                    local_port = 10000 + (int(inst['InstanceId'][-3:], 16) % 1000) + i
+                    local_port = calculate_local_port(inst['InstanceId']) + i
                     print(colored_text(f"\n(info) Windows 인스턴스 RDP 연결을 시작합니다 (localhost:{local_port})...", Colors.INFO))
 
                     proc = start_port_forward(manager.profile, inst_region, inst['InstanceId'], local_port)
@@ -2655,7 +2664,11 @@ def connect_to_rds(manager: AWSManager, tool_path: str, region: str):
 
                 # DBeaver 창을 포그라운드로 활성화
                 time.sleep(1)  # DBeaver가 시작될 시간 대기
-                subprocess.run(['osascript', '-e', 'tell application "DBeaver" to activate'])
+                try:
+                    subprocess.run(['osascript', '-e', 'tell application "DBeaver" to activate'],
+                                   check=False, timeout=5)
+                except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+                    logging.warning(f"DBeaver 활성화 실패: {e}")
             elif tool_path and Path(tool_path).exists():
                 # mysql CLI 같은 도구가 있으면 실행
                 for i, choice_idx in enumerate(valid_choices):
