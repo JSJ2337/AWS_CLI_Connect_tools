@@ -23,7 +23,8 @@ ec2menu_script/
 
 ## Current Version
 
-**v5.2.0 - macOS 전용 버전**
+### v5.2.0 - macOS 전용 버전
+
 - Windows v5.1.9에서 포팅
 - macOS 네이티브 지원 (iTerm2/Terminal.app)
 - WSL 코드 제거 및 경로 처리 개선
@@ -56,6 +57,7 @@ docker-compose up -d --build
 ## Features
 
 ### Core Features
+
 - EC2 인스턴스 목록 조회 및 관리
 - SSM 터미널 접속 (Linux/Windows RDP)
 - RDS 데이터베이스 연결
@@ -65,6 +67,7 @@ docker-compose up -d --build
 - 연결 히스토리 및 캐싱
 
 ### Advanced Features
+
 - **배치 작업**: 여러 인스턴스 동시 명령 실행
   - 자동 재시도 (최대 3회, 10s/20s/30s 점진적 대기)
   - 실패 인스턴스 선택적 재시도
@@ -92,6 +95,7 @@ AWS Services (EC2, RDS, ECS, SSM)
 ## Development Guidelines
 
 ### Commit Convention
+
 ```bash
 # 기능 추가
 feat: 배치 작업 재시도 로직 강화
@@ -107,6 +111,7 @@ security: DB 비밀번호 마스킹 처리
 ```
 
 ### Code Quality Standards
+
 - Python 3.9+ 호환성 (`from __future__ import annotations`)
 - PEP 8 준수 (import 순서, 줄 길이)
 - Type hints 사용 권장
@@ -114,6 +119,7 @@ security: DB 비밀번호 마스킹 처리
 - 상세한 에러 처리 및 로깅
 
 ### Testing Checklist
+
 - [ ] Python 구문 체크: `python3 -m py_compile ec2menu_v5.2.0_mac.py`
 - [ ] EC2 인스턴스 접속 테스트
 - [ ] 배치 작업 테스트 (재시도 포함)
