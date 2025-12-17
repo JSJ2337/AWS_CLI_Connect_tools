@@ -1778,8 +1778,10 @@ def launch_terminal_session(command_list, use_iterm=True):
     # shlex.quote()로 각 인자를 안전하게 이스케이프
     cmd_str = ' '.join(shlex.quote(arg) for arg in command_list)
 
-    # AppleScript 인젝션 방지: 명령어 내부의 따옴표와 백슬래시 이스케이프
-    escaped_cmd = cmd_str.replace('\\', '\\\\').replace('"', '\\"')
+    # AppleScript 문자열 내부에서 사용할 수 있도록 이스케이프
+    # shlex.quote()가 이미 쉘 인젝션을 방지했으므로,
+    # AppleScript의 따옴표만 이스케이프 (백슬래시는 shlex가 이미 처리)
+    escaped_cmd = cmd_str.replace('"', '\\"')
 
     if use_iterm and check_iterm2():
         # iTerm2가 실행 중인지 확인
