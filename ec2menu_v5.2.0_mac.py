@@ -105,8 +105,8 @@ def get_status_color(status):
 class CacheEntry:
     data: Any
     timestamp: datetime
-    ttl_seconds: int = 300  # 5분 기본 TTL
-    
+    ttl_seconds: int = 300  # Config.CACHE_TTL_SECONDS로 설정됨
+
     def is_expired(self) -> bool:
         return datetime.now() - self.timestamp > timedelta(seconds=self.ttl_seconds)
 
@@ -123,7 +123,9 @@ class PerformanceCache:
                 return entry.data
             return None
     
-    def set(self, key: str, data: Any, ttl_seconds: int = 300):
+    def set(self, key: str, data: Any, ttl_seconds: Optional[int] = None):
+        if ttl_seconds is None:
+            ttl_seconds = Config.CACHE_TTL_SECONDS
         with self._lock:
             self._cache[key] = CacheEntry(data, datetime.now(), ttl_seconds)
     
@@ -179,19 +181,59 @@ def normalize_file_path(path_str):
 # 설정 및 기본값 (v5.2.0 macOS 버전)
 # ----------------------------------------------------------------------------
 
-AWS_CONFIG_PATH          = Path("~/.aws/config").expanduser()
-AWS_CRED_PATH            = Path("~/.aws/credentials").expanduser()
-LOG_PATH                 = Path.home() / ".ec2menu.log"  # 숨김 파일로 변경
-HISTORY_PATH             = Path.home() / ".ec2menu_history.json"
-BATCH_RESULTS_PATH       = Path.home() / ".ec2menu_batch_results.json"
-DEFAULT_WORKERS          = 20
+class Config:
+    """애플리케이션 설정 (매직 넘버 제거 및 중앙 관리)"""
+    # 파일 경로
+    AWS_CONFIG_PATH = Path("~/.aws/config").expanduser()
+    AWS_CRED_PATH = Path("~/.aws/credentials").expanduser()
+    LOG_PATH = Path.home() / ".ec2menu.log"
+    HISTORY_PATH = Path.home() / ".ec2menu_history.json"
+    BATCH_RESULTS_PATH = Path.home() / ".ec2menu_batch_results.json"
 
-# macOS용 데이터베이스 도구 경로 (환경변수 또는 기본값)
-# 권장: Sequel Ace, TablePlus, DBeaver, mysql-client 등
-DEFAULT_DB_TOOL_PATH     = os.environ.get('DB_TOOL_PATH', "mysql")
+    # 성능 설정
+    DEFAULT_WORKERS = 20
+    CACHE_TTL_SECONDS = 300  # 5분
 
-DEFAULT_CACHE_REDIS_CLI  = os.environ.get('CACHE_REDIS_CLI', "redis-cli")
-DEFAULT_CACHE_MEMCACHED_CLI = os.environ.get('CACHE_MEMCACHED_CLI', "telnet")
+    # 배치 작업 설정
+    BATCH_MAX_RETRIES = 3
+    BATCH_TIMEOUT_SECONDS = 600  # 10분
+    BATCH_MAX_WAIT_ATTEMPTS = 200
+    BATCH_CONCURRENT_JOBS = 5
+
+    # 페이지네이션 설정
+    EC2_PAGE_SIZE = 100
+    MAX_PAGINATION_PAGES = 100
+
+    # 포트 설정
+    PORT_RANGE_START = 10000
+    PORT_RANGE_END = 19999
+    RDS_PORT_START = 11000
+
+    # SSM 설정
+    SSM_TIMEOUT_SECONDS = 600
+
+    # 히스토리 설정
+    HISTORY_MAX_SIZE = 100
+
+    # macOS용 도구 경로 (환경변수 우선)
+    DB_TOOL_PATH = os.environ.get('DB_TOOL_PATH', "mysql")
+    DBEAVER_PATH = os.environ.get('DBEAVER_PATH', '/Applications/DBeaver.app/Contents/MacOS/dbeaver')
+    CACHE_REDIS_CLI = os.environ.get('CACHE_REDIS_CLI', "redis-cli")
+    CACHE_MEMCACHED_CLI = os.environ.get('CACHE_MEMCACHED_CLI', "telnet")
+
+    # 디버그 모드
+    DEBUG_MODE = os.environ.get('EC2MENU_DEBUG', '0') == '1'
+
+# 하위 호환성을 위한 별칭
+AWS_CONFIG_PATH = Config.AWS_CONFIG_PATH
+AWS_CRED_PATH = Config.AWS_CRED_PATH
+LOG_PATH = Config.LOG_PATH
+HISTORY_PATH = Config.HISTORY_PATH
+BATCH_RESULTS_PATH = Config.BATCH_RESULTS_PATH
+DEFAULT_WORKERS = Config.DEFAULT_WORKERS
+DEFAULT_DB_TOOL_PATH = Config.DB_TOOL_PATH
+DEFAULT_CACHE_REDIS_CLI = Config.CACHE_REDIS_CLI
+DEFAULT_CACHE_MEMCACHED_CLI = Config.CACHE_MEMCACHED_CLI
 
 # 전역 변수
 _stored_credentials = {}
@@ -353,41 +395,53 @@ class FileTransferManager:
                     timestamp=datetime.now()
                 )
             
-            # S3에서 EC2로 다운로드 명령 (디버깅 추가)
-            command = f"""
-            echo "=== 파일 전송 시작 ==="
-            echo "S3 버킷: {bucket_name}"
-            echo "S3 키: {s3_key}"
-            echo "대상 경로: {remote_path}"
-            
-            # AWS CLI 설치 확인
-            echo "=== AWS CLI 확인 ==="
-            which aws || echo "AWS CLI not found"
-            aws --version 2>/dev/null || echo "AWS CLI version check failed"
-            
-            # IAM 역할 확인
-            echo "=== IAM 역할 확인 ==="
-            aws sts get-caller-identity 2>/dev/null || echo "IAM role check failed"
-            
-            # S3 버킷 접근 확인
-            echo "=== S3 버킷 접근 확인 ==="
-            aws s3 ls s3://{bucket_name}/ 2>/dev/null || echo "S3 bucket access failed"
-            
-            # 파일 다운로드
-            echo "=== 파일 다운로드 ==="
-            aws s3 cp s3://{bucket_name}/{s3_key} {remote_path} --debug 2>&1
-            
-            # 결과 확인
-            echo "=== 결과 확인 ==="
-            if [ -f "{remote_path}" ]; then
-                echo "TRANSFER_SUCCESS: $(ls -l {remote_path} | awk '{{print $5}}')"
-                echo "File exists: YES"
-            else
-                echo "TRANSFER_SUCCESS: 0"
-                echo "File exists: NO"
-            fi
-            echo "=== 전송 완료 ==="
-            """
+            # S3에서 EC2로 다운로드 명령
+            if Config.DEBUG_MODE:
+                # 디버그 모드: 상세 로그 출력
+                command = f"""
+                echo "=== 파일 전송 시작 ==="
+                echo "S3 버킷: {bucket_name}"
+                echo "S3 키: {s3_key}"
+                echo "대상 경로: {remote_path}"
+
+                # AWS CLI 설치 확인
+                echo "=== AWS CLI 확인 ==="
+                which aws || echo "AWS CLI not found"
+                aws --version 2>/dev/null || echo "AWS CLI version check failed"
+
+                # IAM 역할 확인
+                echo "=== IAM 역할 확인 ==="
+                aws sts get-caller-identity 2>/dev/null || echo "IAM role check failed"
+
+                # S3 버킷 접근 확인
+                echo "=== S3 버킷 접근 확인 ==="
+                aws s3 ls s3://{bucket_name}/ 2>/dev/null || echo "S3 bucket access failed"
+
+                # 파일 다운로드
+                echo "=== 파일 다운로드 ==="
+                aws s3 cp s3://{bucket_name}/{s3_key} {remote_path} --debug 2>&1
+
+                # 결과 확인
+                echo "=== 결과 확인 ==="
+                if [ -f "{remote_path}" ]; then
+                    echo "TRANSFER_SUCCESS: $(ls -l {remote_path} | awk '{{print $5}}')"
+                    echo "File exists: YES"
+                else
+                    echo "TRANSFER_SUCCESS: 0"
+                    echo "File exists: NO"
+                fi
+                echo "=== 전송 완료 ==="
+                """
+            else:
+                # 프로덕션 모드: 간결한 출력
+                command = f"""
+                aws s3 cp s3://{bucket_name}/{s3_key} {remote_path} 2>&1
+                if [ -f "{remote_path}" ]; then
+                    echo "TRANSFER_SUCCESS: $(ls -l {remote_path} | awk '{{print $5}}')"
+                else
+                    echo "TRANSFER_FAILED"
+                fi
+                """
             
             ssm = self.aws_manager.session.client('ssm')
             response = ssm.send_command(
@@ -869,6 +923,32 @@ class BatchJobManager:
             logging.warning(f"배치 결과 히스토리 저장 실패: {e}")
 
 # ----------------------------------------------------------------------------
+# 인스턴스 필터링 헬퍼 함수
+# ----------------------------------------------------------------------------
+def filter_linux_instances(instances: List[dict], valid_choices: List[int], region: Optional[str] = None) -> List[dict]:
+    """Linux 인스턴스만 필터링 (Windows 제외)"""
+    selected = []
+    for choice_idx in valid_choices:
+        inst_data = instances[choice_idx - 1]
+        inst = inst_data['raw']
+
+        # Windows 인스턴스 제외
+        if inst.get('PlatformDetails', 'Linux').lower().startswith('windows'):
+            print(colored_text(
+                f"⚠️  Windows 인스턴스는 배치 작업/파일 전송을 지원하지 않습니다: {inst_data['Name']}",
+                Colors.WARNING
+            ))
+            continue
+
+        # 리전 정보 추가 (필요 시)
+        if region and 'Region' not in inst_data:
+            inst_data['Region'] = inst.get('_region', region)
+
+        selected.append(inst_data)
+
+    return selected
+
+# ----------------------------------------------------------------------------
 # 정렬 기능 (v5.0.2 원본)
 # ----------------------------------------------------------------------------
 def sort_instances(instances, sort_key='Name', reverse=False):
@@ -1039,7 +1119,7 @@ class AWSManager:
         
         # 캐시에 없거나 강제 새로고침
         instances = self._fetch_instances(region)
-        _cache.set(cache_key, instances, ttl_seconds=300)  # 5분 캐시
+        _cache.set(cache_key, instances)  # Config.CACHE_TTL_SECONDS 사용
         return instances
     
     def _fetch_instances(self, region: str):
@@ -1147,7 +1227,7 @@ class AWSManager:
                     ssm_instances.append({'Id': i['InstanceId'], 'Name': name})
             
             result = sorted(ssm_instances, key=lambda x: x['Name'])
-            _cache.set(cache_key, result, ttl_seconds=300)
+            _cache.set(cache_key, result, )
             return result
         except ClientError as e:
             print(colored_text(f"❌ AWS 호출 실패 (list_ssm_managed): {e}", Colors.ERROR))
@@ -1173,7 +1253,7 @@ class AWSManager:
                 }
                 for d in dbs
             ]
-            _cache.set(cache_key, result, ttl_seconds=300)
+            _cache.set(cache_key, result, )
             return result
         except ClientError as e:
             print(colored_text(f"❌ AWS 호출 실패 (describe_db_instances): {e}", Colors.ERROR))
@@ -1216,7 +1296,7 @@ class AWSManager:
                     'Address': ep.get('Address',''),
                     'Port':    ep.get('Port',0)
                 })
-            _cache.set(cache_key, result, ttl_seconds=300)
+            _cache.set(cache_key, result, )
             return result
         except ClientError as e:
             print(colored_text(f"❌ AWS 호출 실패 (describe_cache_clusters): {e}", Colors.ERROR))
@@ -1265,7 +1345,7 @@ class AWSManager:
                 }
                 for c in cluster_details
             ]
-            _cache.set(cache_key, result, ttl_seconds=300)
+            _cache.set(cache_key, result, )
             return result
         except ClientError as e:
             print(colored_text(f"❌ AWS 호출 실패 (list_ecs_clusters): {e}", Colors.ERROR))
@@ -1299,7 +1379,7 @@ class AWSManager:
                 }
                 for s in service_details
             ]
-            _cache.set(cache_key, result, ttl_seconds=300)
+            _cache.set(cache_key, result, )
             return result
         except ClientError as e:
             print(colored_text(f"❌ AWS 호출 실패 (list_ecs_services): {e}", Colors.ERROR))
