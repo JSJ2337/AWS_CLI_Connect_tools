@@ -20,25 +20,28 @@ v5.2.0 macOS 버전:
 - 🔑 DB 비밀번호 세션 임시 저장 (메모리만, 종료 시 삭제)
 - 🏃 Role=jumphost 태그 기반 점프 호스트 자동 선택
 """
-import os
-import sys
+from __future__ import annotations  # Python 3.9 이하 호환성
+
 import argparse
-import configparser
+import atexit
 import concurrent.futures
-import logging
-import readline
-import subprocess
-import time
-import threading
-from pathlib import Path
+import configparser
 import getpass
 import json
-from datetime import datetime, timedelta
+import logging
+import os
+import platform
 import re
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Any
+import readline
+import subprocess
+import sys
+import threading
+import time
 import uuid
-import atexit
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 import boto3
 from botocore.exceptions import ClientError, ProfileNotFound, NoCredentialsError
@@ -162,7 +165,6 @@ _cache = PerformanceCache()
 # ----------------------------------------------------------------------------
 # 플랫폼 감지 함수 (v5.2.0 macOS 버전)
 # ----------------------------------------------------------------------------
-import platform
 
 # 플랫폼 상수 (macOS 전용)
 IS_MAC = platform.system() == 'Darwin'
@@ -247,28 +249,30 @@ DEFAULT_CACHE_MEMCACHED_CLI = Config.CACHE_MEMCACHED_CLI
 _stored_credentials = {}
 _sort_key = 'Name'  # 기본 정렬 키
 _sort_reverse = False  # 기본 오름차순
-_temp_files_to_cleanup = []  # 프로그램 종료 시 삭제할 임시 파일
+_temp_files_to_cleanup: list[Path] = []  # 프로그램 종료 시 삭제할 임시 파일
+_temp_files_lock = threading.Lock()  # 동시성 보호
 
 # ----------------------------------------------------------------------------
 # 로거 설정 (v4.40 수정)
 # ----------------------------------------------------------------------------
-def setup_logger(debug: bool):
+def setup_logger(debug: bool) -> None:
+    """로깅 설정 초기화"""
     level = logging.DEBUG if debug else logging.INFO
     fmt   = "%(asctime)s [%(levelname)s] %(message)s"
     handlers = [logging.StreamHandler(sys.stdout), logging.FileHandler(LOG_PATH, encoding="utf-8")]
     # style='%'를 명시하여 boto3 내부 로그와의 충돌 방지
     logging.basicConfig(level=level, format=fmt, handlers=handlers, style='%')
 
-def cleanup_temp_files():
+def cleanup_temp_files() -> None:
     """프로그램 종료 시 임시 파일 정리"""
-    global _temp_files_to_cleanup
-    for file_path in _temp_files_to_cleanup:
-        try:
-            if file_path.exists():
-                file_path.unlink()
-                logging.info(f"임시 파일 삭제됨: {file_path}")
-        except Exception as e:
-            logging.warning(f"임시 파일 삭제 실패: {file_path} - {e}")
+    with _temp_files_lock:
+        for file_path in _temp_files_to_cleanup:
+            try:
+                if file_path.exists():
+                    file_path.unlink()
+                    logging.info(f"임시 파일 삭제됨: {file_path}")
+            except Exception as e:
+                logging.warning(f"임시 파일 삭제 실패: {file_path} - {e}")
 
 # 프로그램 종료 시 자동 정리 등록
 atexit.register(cleanup_temp_files)
@@ -636,7 +640,17 @@ class FileTransferManager:
         if not self.temp_bucket:
             return
 
+        # 세션 유효성 검사 (프로그램 종료 시 세션이 무효화될 수 있음)
+        if not hasattr(self, 'aws_manager') or not self.aws_manager:
+            logging.warning(f"AWS Manager가 유효하지 않아 임시 S3 버킷 삭제를 건너뜁니다: {self.temp_bucket}")
+            return
+
         try:
+            # 세션이 유효한지 확인
+            if not hasattr(self.aws_manager, 'session') or not self.aws_manager.session:
+                logging.warning(f"AWS 세션이 유효하지 않아 임시 S3 버킷 삭제를 건너뜁니다: {self.temp_bucket}")
+                return
+
             s3 = self.aws_manager.session.client('s3')
 
             # 버킷 내 모든 객체 삭제
@@ -645,7 +659,7 @@ class FileTransferManager:
                 if 'Contents' in objects:
                     for obj in objects['Contents']:
                         s3.delete_object(Bucket=self.temp_bucket, Key=obj['Key'])
-            except Exception:
+            except (ClientError, KeyError):
                 pass  # 객체가 없거나 이미 삭제됨
 
             # 버킷 삭제
@@ -1926,9 +1940,10 @@ username:s:Administrator
     # 파일 권한을 600으로 설정 (소유자만 읽기/쓰기)
     os.chmod(rdp_file, 0o600)
 
-    # atexit 정리 목록에 추가
-    global _temp_files_to_cleanup
-    _temp_files_to_cleanup.append(rdp_file)
+    # atexit 정리 목록에 추가 (thread-safe)
+    global _temp_files_to_cleanup, _temp_files_lock
+    with _temp_files_lock:
+        _temp_files_to_cleanup.append(rdp_file)
 
     print(colored_text(f'\n📄 RDP 연결 파일 생성: {rdp_file}', Colors.INFO))
 
@@ -1954,7 +1969,8 @@ username:s:Administrator
         try:
             if rdp_file.exists():
                 rdp_file.unlink()
-                _temp_files_to_cleanup.remove(rdp_file)  # 정리 목록에서 제거
+                with _temp_files_lock:
+                    _temp_files_to_cleanup.remove(rdp_file)  # 정리 목록에서 제거
                 print(colored_text(f'🗑️  임시 RDP 파일 삭제됨', Colors.INFO))
         except Exception as e:
             # 삭제 실패 시 경고 로그 기록 (atexit에서 재시도)
