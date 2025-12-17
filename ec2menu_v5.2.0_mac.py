@@ -1498,12 +1498,13 @@ def list_profiles():
         profiles.update(cred.sections())
     return sorted(profiles)
 
-def choose_profile():
+def choose_profile() -> str:
+    """AWS 프로파일 선택 (항상 str 반환 또는 sys.exit)"""
     lst = list_profiles()
     if not lst:
         print(colored_text("❌ AWS 프로파일이 없습니다. ~/.aws/config 또는 ~/.aws/credentials 파일을 확인하세요.", Colors.ERROR))
         sys.exit(1)
-    
+
     print(colored_text("\n--- [ AWS Profiles ] ---", Colors.HEADER))
     for i, p in enumerate(lst, 1):
         print(f" {i:2d}) {p}")
@@ -1526,7 +1527,8 @@ def choose_profile():
             print(colored_text("❌ 최대 재시도 횟수 초과. 프로그램을 종료합니다.", Colors.ERROR))
             sys.exit(1)
 
-def choose_region(manager: AWSManager):
+def choose_region(manager: AWSManager) -> Optional[str]:
+    """AWS 리전 선택 (str 또는 None 반환)"""
     regs = manager.list_regions()
     valid = []
     print(colored_text("\n⏳ EC2 인스턴스가 있는 리전을 검색 중입니다. 잠시만 기다려주세요...", Colors.INFO))
@@ -1568,17 +1570,17 @@ def choose_region(manager: AWSManager):
             print(colored_text("❌ 최대 재시도 횟수 초과. 메뉴로 돌아갑니다.", Colors.ERROR))
             return None
 
-def choose_jump_host(manager, region):
+def choose_jump_host(manager: AWSManager, region: str) -> Optional[str]:
     """사용자에게 SSM 관리 인스턴스(Jump Host)를 선택하게 합니다. Role=jumphost 태그가 있는 EC2만 표시합니다."""
     # Role=jumphost 태그가 있는 SSM 인스턴스만 가져오기
     jump_host_tags = {"Role": "jumphost"}
     ssm_targets = manager.list_ssm_managed(region, jump_host_tags)
-    
+
     if not ssm_targets:
         print(colored_text("⚠ Role=jumphost 태그가 있는 SSM 관리 인스턴스가 없습니다.", Colors.WARNING))
         print("   점프 호스트로 사용할 EC2에 'Role=jumphost' 태그를 추가해주세요.")
         return None
-    
+
     if len(ssm_targets) == 1:
         print(colored_text(f"\n(info) 유일한 Jump Host '{ssm_targets[0]['Name']} ({ssm_targets[0]['Id']})'를 사용합니다.", Colors.INFO))
         return ssm_targets[0]['Id']
@@ -1587,7 +1589,7 @@ def choose_jump_host(manager, region):
     for i, target in enumerate(ssm_targets, 1):
         print(f" {i:2d}) {target['Name']} ({target['Id']})")
     print("--------------------------------------------\n")
-    
+
     retry_count = 0
     while retry_count < Config.MAX_INPUT_RETRIES:
         sel = input(colored_text("사용할 Jump Host 번호 입력 (b=뒤로): ", Colors.PROMPT))
