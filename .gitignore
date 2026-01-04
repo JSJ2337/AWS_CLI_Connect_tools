@@ -1,0 +1,44 @@
+# Claude AI 설정
+.claude/
+CLAUDE.md
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# AWS Credentials
+*.pem
+*.key
+credentials
+config
+cookies.txt
+
+# 로그 파일
+*.log
+ec2menu.log
+
+# 임시 파일
+*.tmp
+*.swp
+*.swo
+*~
+*\ 2.py
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# HeidiSQL
+*.session
