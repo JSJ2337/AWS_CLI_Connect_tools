@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-EC2, RDS, ElastiCache, ECS 접속 자동화 스크립트 v5.2.0 (macOS 전용)
+EC2, RDS, ElastiCache, ECS, EKS 접속 자동화 스크립트 v5.3.0 (macOS 전용)
+
+v5.3.0 macOS 버전:
+- ☸️ EKS 클러스터 관리 기능 추가 (클러스터, 노드그룹, Fargate 프로필)
+- 📦 kubectl 연동: Pod 목록/로그/exec 접속 (kubectl 설치 시 자동 활성화)
+- 🌐 AWS CloudShell 브라우저 열기 기능
+- ⚙️ kubeconfig 자동 설정
 
 v5.2.0 macOS 버전:
 - 🍎 macOS 네이티브 지원 (pathlib 경로 처리)
@@ -17,6 +23,7 @@ v5.2.0 macOS 버전:
 - 🗄️ 멀티 리전 통합 뷰 (여러 리전의 인스턴스 한 번에 조회)
 - 📜 연결 히스토리 (최근 접속한 인스턴스 기록 및 빠른 재접속)
 - 🐳 ECS Fargate 컨테이너 접속 (ECS Exec 활용)
+- ☸️ EKS 클러스터 관리 (boto3 + kubectl 연동)
 - 🔑 DB 비밀번호 세션 임시 저장 (메모리만, 종료 시 삭제)
 - 🏃 Role=jumphost 태그 기반 점프 호스트 자동 선택
 """
@@ -66,9 +73,10 @@ except ImportError:
 class Colors:
     # 서비스별 색깔
     EC2 = Fore.BLUE
-    RDS = Fore.YELLOW  
+    RDS = Fore.YELLOW
     CACHE = Fore.MAGENTA
     ECS = Fore.CYAN
+    EKS = Fore.GREEN  # EKS 전용 색상
     
     # 상태별 색깔
     RUNNING = Fore.GREEN
@@ -1611,6 +1619,240 @@ class AWSManager:
             print(colored_text(f"❌ AWS 호출 실패 (list_ecs_tasks): {e}", Colors.ERROR))
             return []
 
+    # ------------------------------------------------------------------------
+    # EKS 관련 메서드 (v5.3.0 신규)
+    # ------------------------------------------------------------------------
+    def list_eks_clusters(self, region: str, force_refresh: bool = False) -> List[Dict]:
+        """EKS 클러스터 목록을 가져옵니다."""
+        cache_key = f"eks_clusters_{self.profile}_{region}"
+        if not force_refresh:
+            cached_data = _cache.get(cache_key)
+            if cached_data:
+                return cached_data
+
+        try:
+            eks = self.session.client('eks', region_name=region)
+            cluster_names = eks.list_clusters().get('clusters', [])
+            if not cluster_names:
+                return []
+
+            result = []
+            for name in cluster_names:
+                try:
+                    detail = eks.describe_cluster(name=name).get('cluster', {})
+                    result.append({
+                        'Name': detail.get('name', name),
+                        'Arn': detail.get('arn', ''),
+                        'Status': detail.get('status', 'UNKNOWN'),
+                        'Version': detail.get('version', 'N/A'),
+                        'Endpoint': detail.get('endpoint', ''),
+                        'PlatformVersion': detail.get('platformVersion', 'N/A'),
+                        'CreatedAt': detail.get('createdAt', None),
+                    })
+                except ClientError as e:
+                    logging.warning(f"EKS 클러스터 {name} 상세 조회 실패: {e}")
+                    result.append({
+                        'Name': name,
+                        'Status': 'UNKNOWN',
+                        'Version': 'N/A',
+                    })
+
+            _cache.set(cache_key, result)
+            return result
+        except ClientError as e:
+            print(colored_text(f"❌ AWS 호출 실패 (list_eks_clusters): {e}", Colors.ERROR))
+            return []
+
+    def get_eks_cluster_detail(self, region: str, cluster_name: str) -> Optional[Dict]:
+        """EKS 클러스터 상세 정보를 가져옵니다."""
+        cache_key = f"eks_cluster_detail_{self.profile}_{region}_{cluster_name}"
+        cached_data = _cache.get(cache_key)
+        if cached_data:
+            return cached_data
+
+        try:
+            eks = self.session.client('eks', region_name=region)
+            detail = eks.describe_cluster(name=cluster_name).get('cluster', {})
+
+            result = {
+                'Name': detail.get('name', cluster_name),
+                'Arn': detail.get('arn', ''),
+                'Status': detail.get('status', 'UNKNOWN'),
+                'Version': detail.get('version', 'N/A'),
+                'Endpoint': detail.get('endpoint', ''),
+                'PlatformVersion': detail.get('platformVersion', 'N/A'),
+                'RoleArn': detail.get('roleArn', ''),
+                'VpcId': detail.get('resourcesVpcConfig', {}).get('vpcId', ''),
+                'SubnetIds': detail.get('resourcesVpcConfig', {}).get('subnetIds', []),
+                'SecurityGroupIds': detail.get('resourcesVpcConfig', {}).get('securityGroupIds', []),
+                'ClusterSecurityGroupId': detail.get('resourcesVpcConfig', {}).get('clusterSecurityGroupId', ''),
+                'EndpointPublicAccess': detail.get('resourcesVpcConfig', {}).get('endpointPublicAccess', False),
+                'EndpointPrivateAccess': detail.get('resourcesVpcConfig', {}).get('endpointPrivateAccess', False),
+                'CreatedAt': detail.get('createdAt', None),
+                'Tags': detail.get('tags', {}),
+            }
+            _cache.set(cache_key, result, ttl_seconds=300)
+            return result
+        except ClientError as e:
+            print(colored_text(f"❌ AWS 호출 실패 (get_eks_cluster_detail): {e}", Colors.ERROR))
+            return None
+
+    def list_eks_nodegroups(self, region: str, cluster_name: str, force_refresh: bool = False) -> List[Dict]:
+        """EKS 노드그룹 목록을 가져옵니다."""
+        cache_key = f"eks_nodegroups_{self.profile}_{region}_{cluster_name}"
+        if not force_refresh:
+            cached_data = _cache.get(cache_key)
+            if cached_data:
+                return cached_data
+
+        try:
+            eks = self.session.client('eks', region_name=region)
+            nodegroup_names = eks.list_nodegroups(clusterName=cluster_name).get('nodegroups', [])
+            if not nodegroup_names:
+                return []
+
+            result = []
+            for ng_name in nodegroup_names:
+                try:
+                    detail = eks.describe_nodegroup(clusterName=cluster_name, nodegroupName=ng_name).get('nodegroup', {})
+                    scaling = detail.get('scalingConfig', {})
+                    result.append({
+                        'Name': detail.get('nodegroupName', ng_name),
+                        'Status': detail.get('status', 'UNKNOWN'),
+                        'InstanceTypes': detail.get('instanceTypes', []),
+                        'AmiType': detail.get('amiType', 'N/A'),
+                        'CapacityType': detail.get('capacityType', 'ON_DEMAND'),
+                        'DesiredSize': scaling.get('desiredSize', 0),
+                        'MinSize': scaling.get('minSize', 0),
+                        'MaxSize': scaling.get('maxSize', 0),
+                        'NodeRole': detail.get('nodeRole', ''),
+                    })
+                except ClientError as e:
+                    logging.warning(f"노드그룹 {ng_name} 상세 조회 실패: {e}")
+
+            _cache.set(cache_key, result)
+            return result
+        except ClientError as e:
+            print(colored_text(f"❌ AWS 호출 실패 (list_eks_nodegroups): {e}", Colors.ERROR))
+            return []
+
+    def list_eks_fargate_profiles(self, region: str, cluster_name: str, force_refresh: bool = False) -> List[Dict]:
+        """EKS Fargate 프로필 목록을 가져옵니다."""
+        cache_key = f"eks_fargate_{self.profile}_{region}_{cluster_name}"
+        if not force_refresh:
+            cached_data = _cache.get(cache_key)
+            if cached_data:
+                return cached_data
+
+        try:
+            eks = self.session.client('eks', region_name=region)
+            profile_names = eks.list_fargate_profiles(clusterName=cluster_name).get('fargateProfileNames', [])
+            if not profile_names:
+                return []
+
+            result = []
+            for fp_name in profile_names:
+                try:
+                    detail = eks.describe_fargate_profile(clusterName=cluster_name, fargateProfileName=fp_name).get('fargateProfile', {})
+                    selectors = detail.get('selectors', [])
+                    namespaces = [s.get('namespace', '') for s in selectors]
+                    result.append({
+                        'Name': detail.get('fargateProfileName', fp_name),
+                        'Status': detail.get('status', 'UNKNOWN'),
+                        'PodExecutionRoleArn': detail.get('podExecutionRoleArn', ''),
+                        'Namespaces': namespaces,
+                        'Subnets': detail.get('subnets', []),
+                    })
+                except ClientError as e:
+                    logging.warning(f"Fargate 프로필 {fp_name} 상세 조회 실패: {e}")
+
+            _cache.set(cache_key, result)
+            return result
+        except ClientError as e:
+            print(colored_text(f"❌ AWS 호출 실패 (list_eks_fargate_profiles): {e}", Colors.ERROR))
+            return []
+
+    # ------------------------------------------------------------------------
+    # ECS 로그 관련 메서드 (v5.3.0 신규)
+    # ------------------------------------------------------------------------
+    def get_ecs_task_log_config(self, region: str, task_definition_arn: str) -> List[Dict]:
+        """ECS 태스크 정의에서 로그 설정을 가져옵니다."""
+        try:
+            ecs = self.session.client('ecs', region_name=region)
+            task_def = ecs.describe_task_definition(taskDefinition=task_definition_arn)
+            container_defs = task_def.get('taskDefinition', {}).get('containerDefinitions', [])
+
+            log_configs = []
+            for container in container_defs:
+                log_config = container.get('logConfiguration', {})
+                if log_config.get('logDriver') == 'awslogs':
+                    options = log_config.get('options', {})
+                    log_configs.append({
+                        'ContainerName': container['name'],
+                        'LogGroup': options.get('awslogs-group', ''),
+                        'LogStreamPrefix': options.get('awslogs-stream-prefix', ''),
+                        'Region': options.get('awslogs-region', region),
+                    })
+            return log_configs
+        except ClientError as e:
+            logging.warning(f"태스크 정의 로그 설정 조회 실패: {e}")
+            return []
+
+    def get_ecs_log_streams(self, region: str, log_group: str, log_stream_prefix: str, task_id: str) -> List[str]:
+        """ECS 태스크의 로그 스트림 목록을 가져옵니다."""
+        try:
+            logs = self.session.client('logs', region_name=region)
+            # 로그 스트림 이름 패턴: {prefix}/{container-name}/{task-id}
+            prefix = f"{log_stream_prefix}/" if log_stream_prefix else ""
+
+            response = logs.describe_log_streams(
+                logGroupName=log_group,
+                logStreamNamePrefix=prefix,
+                orderBy='LastEventTime',
+                descending=True,
+                limit=50
+            )
+
+            streams = []
+            for stream in response.get('logStreams', []):
+                stream_name = stream.get('logStreamName', '')
+                # 태스크 ID가 포함된 스트림만 필터링
+                if task_id in stream_name:
+                    streams.append(stream_name)
+            return streams
+        except ClientError as e:
+            logging.warning(f"로그 스트림 조회 실패: {e}")
+            return []
+
+    def get_ecs_container_logs(self, region: str, log_group: str, log_stream: str,
+                                start_time: Optional[int] = None, limit: int = 100) -> List[Dict]:
+        """ECS 컨테이너 로그를 가져옵니다."""
+        try:
+            logs = self.session.client('logs', region_name=region)
+            params = {
+                'logGroupName': log_group,
+                'logStreamName': log_stream,
+                'limit': limit,
+                'startFromHead': False
+            }
+            if start_time:
+                params['startTime'] = start_time
+
+            response = logs.get_log_events(**params)
+            events = response.get('events', [])
+
+            return [
+                {
+                    'timestamp': event.get('timestamp', 0),
+                    'message': event.get('message', ''),
+                    'ingestionTime': event.get('ingestionTime', 0)
+                }
+                for event in events
+            ]
+        except ClientError as e:
+            logging.warning(f"로그 조회 실패: {e}")
+            return []
+
 # ----------------------------------------------------------------------------
 # 공통 선택 기능 (v5.1.0 확장)
 # ----------------------------------------------------------------------------
@@ -2482,6 +2724,449 @@ def ec2_menu(manager: AWSManager, region: str):
             print(colored_text("🔌 모든 RDP 포트 포워딩 연결을 종료했습니다.", Colors.SUCCESS))
 
 # ----------------------------------------------------------------------------
+# EKS 관련 유틸리티 함수 (v5.3.0 신규)
+# ----------------------------------------------------------------------------
+def check_kubectl_installed() -> bool:
+    """kubectl 설치 여부를 확인합니다."""
+    try:
+        result = subprocess.run(
+            ['kubectl', 'version', '--client', '--output=json'],
+            capture_output=True, text=True, timeout=5
+        )
+        return result.returncode == 0
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return False
+
+def check_kubeconfig_exists(cluster_name: str) -> bool:
+    """특정 클러스터에 대한 kubeconfig 컨텍스트가 있는지 확인합니다."""
+    try:
+        result = subprocess.run(
+            ['kubectl', 'config', 'get-contexts', '-o', 'name'],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0:
+            contexts = result.stdout.strip().split('\n')
+            return any(cluster_name in ctx for ctx in contexts)
+        return False
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return False
+
+def update_kubeconfig(profile: str, region: str, cluster_name: str) -> bool:
+    """aws eks update-kubeconfig 명령을 실행하여 kubeconfig를 업데이트합니다."""
+    try:
+        cmd = [
+            'aws', 'eks', 'update-kubeconfig',
+            '--region', region,
+            '--name', cluster_name,
+            '--profile', profile
+        ]
+        print(colored_text(f"\n⏳ kubeconfig 업데이트 중...", Colors.INFO))
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode == 0:
+            print(colored_text(f"✅ kubeconfig 업데이트 완료", Colors.SUCCESS))
+            return True
+        else:
+            print(colored_text(f"❌ kubeconfig 업데이트 실패: {result.stderr}", Colors.ERROR))
+            return False
+    except subprocess.TimeoutExpired:
+        print(colored_text("❌ kubeconfig 업데이트 시간 초과", Colors.ERROR))
+        return False
+    except FileNotFoundError:
+        print(colored_text("❌ AWS CLI가 설치되어 있지 않습니다.", Colors.ERROR))
+        return False
+
+def get_kubectl_pods(namespace: str = 'default') -> List[Dict]:
+    """kubectl을 통해 Pod 목록을 가져옵니다."""
+    try:
+        result = subprocess.run(
+            ['kubectl', 'get', 'pods', '-n', namespace, '-o', 'json'],
+            capture_output=True, text=True, timeout=30
+        )
+        if result.returncode == 0:
+            data = json.loads(result.stdout)
+            pods = []
+            for item in data.get('items', []):
+                metadata = item.get('metadata', {})
+                status = item.get('status', {})
+                container_statuses = status.get('containerStatuses', [])
+
+                pods.append({
+                    'Name': metadata.get('name', 'N/A'),
+                    'Namespace': metadata.get('namespace', 'default'),
+                    'Status': status.get('phase', 'Unknown'),
+                    'Ready': f"{sum(1 for c in container_statuses if c.get('ready', False))}/{len(container_statuses)}",
+                    'Restarts': sum(c.get('restartCount', 0) for c in container_statuses),
+                    'Age': metadata.get('creationTimestamp', 'N/A'),
+                    'Containers': [c.get('name', '') for c in container_statuses],
+                })
+            return pods
+        return []
+    except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError):
+        return []
+
+def get_kubectl_namespaces() -> List[str]:
+    """kubectl을 통해 네임스페이스 목록을 가져옵니다."""
+    try:
+        result = subprocess.run(
+            ['kubectl', 'get', 'namespaces', '-o', 'json'],
+            capture_output=True, text=True, timeout=30
+        )
+        if result.returncode == 0:
+            data = json.loads(result.stdout)
+            return [item.get('metadata', {}).get('name', '') for item in data.get('items', [])]
+        return []
+    except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError):
+        return []
+
+def launch_kubectl_exec(pod_name: str, namespace: str, container: Optional[str] = None):
+    """새 터미널에서 kubectl exec 세션을 시작합니다."""
+    cmd_parts = ['kubectl', 'exec', '-it', pod_name, '-n', namespace]
+    if container:
+        cmd_parts.extend(['-c', container])
+    cmd_parts.extend(['--', '/bin/sh', '-c', 'if command -v bash > /dev/null; then exec bash; else exec sh; fi'])
+
+    cmd_str = ' '.join(cmd_parts)
+
+    if IS_MAC:
+        script = f'''
+        tell application "Terminal"
+            activate
+            do script "{cmd_str}"
+        end tell
+        '''
+        subprocess.Popen(['osascript', '-e', script])
+
+def launch_kubectl_logs(pod_name: str, namespace: str, container: Optional[str] = None, follow: bool = True):
+    """새 터미널에서 kubectl logs 세션을 시작합니다."""
+    cmd_parts = ['kubectl', 'logs', pod_name, '-n', namespace]
+    if container:
+        cmd_parts.extend(['-c', container])
+    if follow:
+        cmd_parts.append('-f')
+
+    cmd_str = ' '.join(cmd_parts)
+
+    if IS_MAC:
+        script = f'''
+        tell application "Terminal"
+            activate
+            do script "{cmd_str}"
+        end tell
+        '''
+        subprocess.Popen(['osascript', '-e', script])
+
+def open_cloudshell_browser(region: str):
+    """CloudShell 콘솔 페이지를 브라우저에서 엽니다."""
+    import webbrowser
+    url = f'https://{region}.console.aws.amazon.com/cloudshell/home?region={region}'
+    print(colored_text(f"\n🌐 CloudShell 페이지를 브라우저에서 엽니다...", Colors.INFO))
+    print(colored_text(f"   URL: {url}", Colors.INFO))
+    webbrowser.open(url)
+    print(colored_text("✅ 브라우저에서 CloudShell에 로그인하세요.", Colors.SUCCESS))
+
+# ----------------------------------------------------------------------------
+# EKS 메뉴 (v5.3.0 신규)
+# ----------------------------------------------------------------------------
+def eks_menu(manager: AWSManager, region: str):
+    """EKS 클러스터 관리 메뉴"""
+    kubectl_available = check_kubectl_installed()
+
+    while True:
+        if region == 'multi-region':
+            print(colored_text("⚠ EKS는 현재 멀티 리전 모드를 지원하지 않습니다. 단일 리전을 선택해주세요.", Colors.WARNING))
+            return
+
+        # 1. EKS 클러스터 목록
+        clusters = manager.list_eks_clusters(region)
+        if not clusters:
+            print(colored_text(f"\n⚠ 리전 {region}에 EKS 클러스터가 없습니다.", Colors.WARNING))
+            return
+
+        print(colored_text(f"\n--- [ EKS Clusters ({region}) ] ---", Colors.HEADER))
+        if not kubectl_available:
+            print(colored_text("⚠ kubectl 미설치 - Pod 관련 기능 비활성화", Colors.WARNING))
+        print()
+
+        for idx, cluster in enumerate(clusters, 1):
+            status_color = get_status_color(cluster['Status'])
+            status_colored = colored_text(cluster['Status'], status_color)
+            version = cluster.get('Version', 'N/A')
+            print(f" {idx:2d}) {colored_text(cluster['Name'], Colors.EKS)} ({status_colored}) - K8s: {version}")
+        print("---------------------------\n")
+
+        cluster_sel = input(colored_text("EKS 클러스터 번호 입력 (b=뒤로): ", Colors.PROMPT)).strip().lower()
+        if not cluster_sel or cluster_sel == 'b':
+            return
+
+        if not cluster_sel.isdigit() or not (1 <= int(cluster_sel) <= len(clusters)):
+            print(colored_text("❌ 유효한 번호를 입력하세요.", Colors.ERROR))
+            continue
+
+        selected_cluster = clusters[int(cluster_sel) - 1]
+        cluster_name = selected_cluster['Name']
+
+        # 2. 클러스터 상세 메뉴
+        while True:
+            print(colored_text(f"\n--- [ EKS: {cluster_name} ] ---", Colors.HEADER))
+            print(f" 1) 📊 클러스터 상세 정보")
+            print(f" 2) 🖥️ 노드그룹 목록")
+            print(f" 3) 🚀 Fargate 프로필")
+            print(f" 4) ⚙️ kubeconfig 설정")
+
+            if kubectl_available:
+                print(f" 5) 📦 Pod 목록 조회")
+                print(f" 6) 📋 Pod 로그 조회")
+                print(f" 7) 🔗 Pod exec 접속")
+            else:
+                print(colored_text(" 5) 📦 Pod 목록 조회 (kubectl 필요)", Colors.WARNING))
+                print(colored_text(" 6) 📋 Pod 로그 조회 (kubectl 필요)", Colors.WARNING))
+                print(colored_text(" 7) 🔗 Pod exec 접속 (kubectl 필요)", Colors.WARNING))
+
+            print("---------------------------\n")
+
+            sub_sel = input(colored_text("선택 (b=뒤로): ", Colors.PROMPT)).strip().lower()
+            if not sub_sel or sub_sel == 'b':
+                break
+
+            if sub_sel == '1':
+                # 클러스터 상세 정보
+                detail = manager.get_eks_cluster_detail(region, cluster_name)
+                if detail:
+                    print(colored_text(f"\n--- [ Cluster Detail: {cluster_name} ] ---", Colors.HEADER))
+                    print(f"  Name:            {detail['Name']}")
+                    print(f"  Status:          {colored_text(detail['Status'], get_status_color(detail['Status']))}")
+                    print(f"  Version:         {detail['Version']}")
+                    print(f"  Platform:        {detail['PlatformVersion']}")
+                    print(f"  Endpoint:        {detail['Endpoint'][:60]}..." if len(detail.get('Endpoint', '')) > 60 else f"  Endpoint:        {detail.get('Endpoint', 'N/A')}")
+                    print(f"  VPC:             {detail['VpcId']}")
+                    print(f"  Public Access:   {'Yes' if detail['EndpointPublicAccess'] else 'No'}")
+                    print(f"  Private Access:  {'Yes' if detail['EndpointPrivateAccess'] else 'No'}")
+                    if detail.get('CreatedAt'):
+                        print(f"  Created:         {detail['CreatedAt']}")
+                    print("------------------------------------------\n")
+                    input(colored_text("계속하려면 Enter를 누르세요...", Colors.PROMPT))
+
+            elif sub_sel == '2':
+                # 노드그룹 목록
+                nodegroups = manager.list_eks_nodegroups(region, cluster_name)
+                if not nodegroups:
+                    print(colored_text(f"\n⚠ 클러스터 {cluster_name}에 노드그룹이 없습니다.", Colors.WARNING))
+                else:
+                    print(colored_text(f"\n--- [ Node Groups in {cluster_name} ] ---", Colors.HEADER))
+                    for idx, ng in enumerate(nodegroups, 1):
+                        status_color = get_status_color(ng['Status'])
+                        status_colored = colored_text(ng['Status'], status_color)
+                        instance_types = ', '.join(ng.get('InstanceTypes', ['N/A']))
+                        scaling = f"{ng['DesiredSize']}/{ng['MinSize']}-{ng['MaxSize']}"
+                        capacity = ng.get('CapacityType', 'ON_DEMAND')
+                        print(f" {idx:2d}) {ng['Name']} ({status_colored})")
+                        print(f"      Types: {instance_types} | Scaling: {scaling} | {capacity}")
+                    print("------------------------------------------\n")
+                input(colored_text("계속하려면 Enter를 누르세요...", Colors.PROMPT))
+
+            elif sub_sel == '3':
+                # Fargate 프로필
+                profiles = manager.list_eks_fargate_profiles(region, cluster_name)
+                if not profiles:
+                    print(colored_text(f"\n⚠ 클러스터 {cluster_name}에 Fargate 프로필이 없습니다.", Colors.WARNING))
+                else:
+                    print(colored_text(f"\n--- [ Fargate Profiles in {cluster_name} ] ---", Colors.HEADER))
+                    for idx, fp in enumerate(profiles, 1):
+                        status_color = get_status_color(fp['Status'])
+                        status_colored = colored_text(fp['Status'], status_color)
+                        namespaces = ', '.join(fp.get('Namespaces', ['N/A']))
+                        print(f" {idx:2d}) {fp['Name']} ({status_colored})")
+                        print(f"      Namespaces: {namespaces}")
+                    print("------------------------------------------\n")
+                input(colored_text("계속하려면 Enter를 누르세요...", Colors.PROMPT))
+
+            elif sub_sel == '4':
+                # kubeconfig 설정
+                update_kubeconfig(manager.profile, region, cluster_name)
+                input(colored_text("계속하려면 Enter를 누르세요...", Colors.PROMPT))
+
+            elif sub_sel == '5':
+                # Pod 목록 조회
+                if not kubectl_available:
+                    print(colored_text("❌ kubectl이 설치되어 있지 않습니다.", Colors.ERROR))
+                    print(colored_text("   설치 방법: brew install kubectl", Colors.INFO))
+                    continue
+
+                # kubeconfig 확인 및 업데이트
+                if not check_kubeconfig_exists(cluster_name):
+                    print(colored_text(f"⚠ 클러스터 {cluster_name}의 kubeconfig가 없습니다.", Colors.WARNING))
+                    update_sel = input(colored_text("kubeconfig를 설정하시겠습니까? (y/N): ", Colors.PROMPT)).strip().lower()
+                    if update_sel == 'y':
+                        if not update_kubeconfig(manager.profile, region, cluster_name):
+                            continue
+                    else:
+                        continue
+
+                # 네임스페이스 선택
+                namespaces = get_kubectl_namespaces()
+                if not namespaces:
+                    print(colored_text("❌ 네임스페이스 목록을 가져올 수 없습니다.", Colors.ERROR))
+                    continue
+
+                print(colored_text("\n--- [ Namespaces ] ---", Colors.HEADER))
+                for idx, ns in enumerate(namespaces, 1):
+                    print(f" {idx:2d}) {ns}")
+                print("----------------------\n")
+
+                ns_sel = input(colored_text("네임스페이스 번호 입력 (Enter=default): ", Colors.PROMPT)).strip()
+                if not ns_sel:
+                    selected_ns = 'default'
+                elif ns_sel.isdigit() and 1 <= int(ns_sel) <= len(namespaces):
+                    selected_ns = namespaces[int(ns_sel) - 1]
+                else:
+                    print(colored_text("❌ 유효한 번호를 입력하세요.", Colors.ERROR))
+                    continue
+
+                # Pod 목록 조회
+                pods = get_kubectl_pods(selected_ns)
+                if not pods:
+                    print(colored_text(f"⚠ 네임스페이스 {selected_ns}에 Pod가 없습니다.", Colors.WARNING))
+                else:
+                    print(colored_text(f"\n--- [ Pods in {selected_ns} ] ---", Colors.HEADER))
+                    for idx, pod in enumerate(pods, 1):
+                        status_color = get_status_color(pod['Status'])
+                        status_colored = colored_text(pod['Status'], status_color)
+                        print(f" {idx:2d}) {pod['Name']} ({status_colored}) Ready: {pod['Ready']} Restarts: {pod['Restarts']}")
+                    print("------------------------------------------\n")
+                input(colored_text("계속하려면 Enter를 누르세요...", Colors.PROMPT))
+
+            elif sub_sel == '6':
+                # Pod 로그 조회
+                if not kubectl_available:
+                    print(colored_text("❌ kubectl이 설치되어 있지 않습니다.", Colors.ERROR))
+                    continue
+
+                if not check_kubeconfig_exists(cluster_name):
+                    print(colored_text(f"⚠ 먼저 kubeconfig를 설정하세요 (메뉴 4번).", Colors.WARNING))
+                    continue
+
+                namespaces = get_kubectl_namespaces()
+                if not namespaces:
+                    continue
+
+                print(colored_text("\n--- [ Namespaces ] ---", Colors.HEADER))
+                for idx, ns in enumerate(namespaces, 1):
+                    print(f" {idx:2d}) {ns}")
+                print("----------------------\n")
+
+                ns_sel = input(colored_text("네임스페이스 번호 입력 (Enter=default): ", Colors.PROMPT)).strip()
+                selected_ns = 'default'
+                if ns_sel.isdigit() and 1 <= int(ns_sel) <= len(namespaces):
+                    selected_ns = namespaces[int(ns_sel) - 1]
+
+                pods = get_kubectl_pods(selected_ns)
+                if not pods:
+                    print(colored_text(f"⚠ 네임스페이스 {selected_ns}에 Pod가 없습니다.", Colors.WARNING))
+                    continue
+
+                print(colored_text(f"\n--- [ Pods in {selected_ns} ] ---", Colors.HEADER))
+                for idx, pod in enumerate(pods, 1):
+                    status_color = get_status_color(pod['Status'])
+                    status_colored = colored_text(pod['Status'], status_color)
+                    print(f" {idx:2d}) {pod['Name']} ({status_colored})")
+                print("------------------------------------------\n")
+
+                pod_sel = input(colored_text("Pod 번호 입력 (b=뒤로): ", Colors.PROMPT)).strip().lower()
+                if not pod_sel or pod_sel == 'b':
+                    continue
+                if not pod_sel.isdigit() or not (1 <= int(pod_sel) <= len(pods)):
+                    print(colored_text("❌ 유효한 번호를 입력하세요.", Colors.ERROR))
+                    continue
+
+                selected_pod = pods[int(pod_sel) - 1]
+
+                # 컨테이너 선택 (여러 개인 경우)
+                containers = selected_pod.get('Containers', [])
+                selected_container = None
+                if len(containers) > 1:
+                    print(colored_text("\n--- [ Containers ] ---", Colors.HEADER))
+                    for idx, c in enumerate(containers, 1):
+                        print(f" {idx:2d}) {c}")
+                    print("----------------------\n")
+                    c_sel = input(colored_text("컨테이너 번호 입력 (Enter=첫번째): ", Colors.PROMPT)).strip()
+                    if c_sel.isdigit() and 1 <= int(c_sel) <= len(containers):
+                        selected_container = containers[int(c_sel) - 1]
+                    else:
+                        selected_container = containers[0] if containers else None
+
+                print(colored_text(f"\n📋 Pod '{selected_pod['Name']}' 로그를 새 터미널에서 엽니다...", Colors.INFO))
+                launch_kubectl_logs(selected_pod['Name'], selected_ns, selected_container)
+                print(colored_text("✅ 새 터미널에서 로그 스트리밍이 시작되었습니다.", Colors.SUCCESS))
+                time.sleep(1)
+
+            elif sub_sel == '7':
+                # Pod exec 접속
+                if not kubectl_available:
+                    print(colored_text("❌ kubectl이 설치되어 있지 않습니다.", Colors.ERROR))
+                    continue
+
+                if not check_kubeconfig_exists(cluster_name):
+                    print(colored_text(f"⚠ 먼저 kubeconfig를 설정하세요 (메뉴 4번).", Colors.WARNING))
+                    continue
+
+                namespaces = get_kubectl_namespaces()
+                if not namespaces:
+                    continue
+
+                print(colored_text("\n--- [ Namespaces ] ---", Colors.HEADER))
+                for idx, ns in enumerate(namespaces, 1):
+                    print(f" {idx:2d}) {ns}")
+                print("----------------------\n")
+
+                ns_sel = input(colored_text("네임스페이스 번호 입력 (Enter=default): ", Colors.PROMPT)).strip()
+                selected_ns = 'default'
+                if ns_sel.isdigit() and 1 <= int(ns_sel) <= len(namespaces):
+                    selected_ns = namespaces[int(ns_sel) - 1]
+
+                pods = get_kubectl_pods(selected_ns)
+                if not pods:
+                    print(colored_text(f"⚠ 네임스페이스 {selected_ns}에 Pod가 없습니다.", Colors.WARNING))
+                    continue
+
+                print(colored_text(f"\n--- [ Pods in {selected_ns} ] ---", Colors.HEADER))
+                for idx, pod in enumerate(pods, 1):
+                    status_color = get_status_color(pod['Status'])
+                    status_colored = colored_text(pod['Status'], status_color)
+                    print(f" {idx:2d}) {pod['Name']} ({status_colored})")
+                print("------------------------------------------\n")
+
+                pod_sel = input(colored_text("Pod 번호 입력 (b=뒤로): ", Colors.PROMPT)).strip().lower()
+                if not pod_sel or pod_sel == 'b':
+                    continue
+                if not pod_sel.isdigit() or not (1 <= int(pod_sel) <= len(pods)):
+                    print(colored_text("❌ 유효한 번호를 입력하세요.", Colors.ERROR))
+                    continue
+
+                selected_pod = pods[int(pod_sel) - 1]
+
+                # 컨테이너 선택
+                containers = selected_pod.get('Containers', [])
+                selected_container = None
+                if len(containers) > 1:
+                    print(colored_text("\n--- [ Containers ] ---", Colors.HEADER))
+                    for idx, c in enumerate(containers, 1):
+                        print(f" {idx:2d}) {c}")
+                    print("----------------------\n")
+                    c_sel = input(colored_text("컨테이너 번호 입력 (Enter=첫번째): ", Colors.PROMPT)).strip()
+                    if c_sel.isdigit() and 1 <= int(c_sel) <= len(containers):
+                        selected_container = containers[int(c_sel) - 1]
+                    else:
+                        selected_container = containers[0] if containers else None
+
+                print(colored_text(f"\n🔗 Pod '{selected_pod['Name']}'에 접속합니다...", Colors.INFO))
+                launch_kubectl_exec(selected_pod['Name'], selected_ns, selected_container)
+                print(colored_text("✅ 새 터미널에서 exec 세션이 시작되었습니다.", Colors.SUCCESS))
+                time.sleep(1)
+
+            else:
+                print(colored_text("❌ 잘못된 선택입니다.", Colors.ERROR))
+
+# ----------------------------------------------------------------------------
 # ECS 메뉴 (v5.0.2 원본 + 캐싱)
 # ----------------------------------------------------------------------------
 def ecs_menu(manager: AWSManager, region: str):
@@ -2573,55 +3258,141 @@ def ecs_menu(manager: AWSManager, region: str):
                     continue
 
                 selected_task = tasks[int(task_sel) - 1]
-                
-                if not selected_task['EnableExecuteCommand']:
-                    print(colored_text("❌ 이 태스크는 ECS Exec이 활성화되지 않았습니다.", Colors.ERROR))
-                    print("서비스 설정에서 enableExecuteCommand를 true로 설정하세요.")
-                    continue
-
-                # 4. 컨테이너 선택 및 접속
+                task_id = selected_task['TaskArn'].split('/')[-1]
                 containers = selected_task['Containers']
-                if len(containers) == 1:
-                    # 컨테이너가 하나면 바로 접속
-                    container = containers[0]
-                    print(colored_text(f"\n🐳 컨테이너 '{container['Name']}'에 접속합니다...", Colors.INFO))
-                    
-                    # 히스토리에 추가
-                    task_id = selected_task['TaskArn'].split('/')[-1]
-                    history_id = f"{cluster_name}:{service_name}:{task_id}:{container['Name']}"
-                    add_to_history('ecs', manager.profile, region, history_id, f"{service_name}/{container['Name']}")
-                    
-                    launch_ecs_exec(manager.profile, region, cluster_name, selected_task['TaskArn'], container['Name'])
-                    print(colored_text("✅ 새 터미널에서 ECS Exec 세션이 시작되었습니다.", Colors.SUCCESS))
-                    time.sleep(Config.WAIT_PORT_READY)
-                else:
-                    # 여러 컨테이너가 있으면 선택
-                    print(colored_text(f"\n--- [ Containers in Task ] ---", Colors.HEADER))
-                    for idx, container in enumerate(containers, 1):
-                        container_status_color = get_status_color(container['Status'])
-                        container_status_colored = colored_text(container['Status'], container_status_color)
-                        print(f" {idx:2d}) {container['Name']} ({container_status_colored})")
-                    print("------------------------------\n")
 
-                    container_sel = input(colored_text("접속할 컨테이너 번호 입력 (b=뒤로): ", Colors.PROMPT)).strip().lower()
-                    if not container_sel or container_sel == 'b':
-                        continue
-                    
-                    if not container_sel.isdigit() or not (1 <= int(container_sel) <= len(containers)):
-                        print(colored_text("❌ 유효한 번호를 입력하세요.", Colors.ERROR))
-                        continue
+                # 4. 태스크 작업 선택 (접속 또는 로그)
+                while True:
+                    print(colored_text(f"\n--- [ Task: {task_id[:12]}... ] ---", Colors.HEADER))
+                    exec_status = colored_text("✅", Colors.SUCCESS) if selected_task['EnableExecuteCommand'] else colored_text("❌ (비활성화)", Colors.WARNING)
+                    print(f" 1) 🔗 컨테이너 접속 (Exec: {exec_status})")
+                    print(f" 2) 📋 컨테이너 로그 조회")
+                    print("---------------------------\n")
 
-                    selected_container = containers[int(container_sel) - 1]
-                    print(colored_text(f"\n🐳 컨테이너 '{selected_container['Name']}'에 접속합니다...", Colors.INFO))
-                    
-                    # 히스토리에 추가
-                    task_id = selected_task['TaskArn'].split('/')[-1]
-                    history_id = f"{cluster_name}:{service_name}:{task_id}:{selected_container['Name']}"
-                    add_to_history('ecs', manager.profile, region, history_id, f"{service_name}/{selected_container['Name']}")
-                    
-                    launch_ecs_exec(manager.profile, region, cluster_name, selected_task['TaskArn'], selected_container['Name'])
-                    print(colored_text("✅ 새 터미널에서 ECS Exec 세션이 시작되었습니다.", Colors.SUCCESS))
-                    time.sleep(Config.WAIT_PORT_READY)
+                    action_sel = input(colored_text("작업 선택 (b=뒤로): ", Colors.PROMPT)).strip().lower()
+                    if not action_sel or action_sel == 'b':
+                        break
+
+                    if action_sel == '1':
+                        # 컨테이너 접속
+                        if not selected_task['EnableExecuteCommand']:
+                            print(colored_text("❌ 이 태스크는 ECS Exec이 활성화되지 않았습니다.", Colors.ERROR))
+                            print("서비스 설정에서 enableExecuteCommand를 true로 설정하세요.")
+                            continue
+
+                        if len(containers) == 1:
+                            container = containers[0]
+                            print(colored_text(f"\n🐳 컨테이너 '{container['Name']}'에 접속합니다...", Colors.INFO))
+                            history_id = f"{cluster_name}:{service_name}:{task_id}:{container['Name']}"
+                            add_to_history('ecs', manager.profile, region, history_id, f"{service_name}/{container['Name']}")
+                            launch_ecs_exec(manager.profile, region, cluster_name, selected_task['TaskArn'], container['Name'])
+                            print(colored_text("✅ 새 터미널에서 ECS Exec 세션이 시작되었습니다.", Colors.SUCCESS))
+                            time.sleep(Config.WAIT_PORT_READY)
+                        else:
+                            print(colored_text(f"\n--- [ Containers ] ---", Colors.HEADER))
+                            for idx, container in enumerate(containers, 1):
+                                container_status_color = get_status_color(container['Status'])
+                                container_status_colored = colored_text(container['Status'], container_status_color)
+                                print(f" {idx:2d}) {container['Name']} ({container_status_colored})")
+                            print("----------------------\n")
+
+                            container_sel = input(colored_text("접속할 컨테이너 번호 입력 (b=뒤로): ", Colors.PROMPT)).strip().lower()
+                            if not container_sel or container_sel == 'b':
+                                continue
+                            if not container_sel.isdigit() or not (1 <= int(container_sel) <= len(containers)):
+                                print(colored_text("❌ 유효한 번호를 입력하세요.", Colors.ERROR))
+                                continue
+
+                            selected_container = containers[int(container_sel) - 1]
+                            print(colored_text(f"\n🐳 컨테이너 '{selected_container['Name']}'에 접속합니다...", Colors.INFO))
+                            history_id = f"{cluster_name}:{service_name}:{task_id}:{selected_container['Name']}"
+                            add_to_history('ecs', manager.profile, region, history_id, f"{service_name}/{selected_container['Name']}")
+                            launch_ecs_exec(manager.profile, region, cluster_name, selected_task['TaskArn'], selected_container['Name'])
+                            print(colored_text("✅ 새 터미널에서 ECS Exec 세션이 시작되었습니다.", Colors.SUCCESS))
+                            time.sleep(Config.WAIT_PORT_READY)
+
+                    elif action_sel == '2':
+                        # 로그 조회
+                        log_configs = manager.get_ecs_task_log_config(region, selected_task['TaskDefinitionArn'])
+                        if not log_configs:
+                            print(colored_text("❌ 이 태스크에는 CloudWatch Logs 설정이 없습니다.", Colors.ERROR))
+                            print(colored_text("   태스크 정의에서 awslogs 로그 드라이버를 설정하세요.", Colors.INFO))
+                            continue
+
+                        # 컨테이너 선택 (로그 설정이 있는 컨테이너만)
+                        if len(log_configs) == 1:
+                            selected_log_config = log_configs[0]
+                        else:
+                            print(colored_text(f"\n--- [ Containers with Logs ] ---", Colors.HEADER))
+                            for idx, lc in enumerate(log_configs, 1):
+                                print(f" {idx:2d}) {lc['ContainerName']} → {lc['LogGroup']}")
+                            print("--------------------------------\n")
+
+                            lc_sel = input(colored_text("컨테이너 번호 입력 (b=뒤로): ", Colors.PROMPT)).strip().lower()
+                            if not lc_sel or lc_sel == 'b':
+                                continue
+                            if not lc_sel.isdigit() or not (1 <= int(lc_sel) <= len(log_configs)):
+                                print(colored_text("❌ 유효한 번호를 입력하세요.", Colors.ERROR))
+                                continue
+                            selected_log_config = log_configs[int(lc_sel) - 1]
+
+                        # 로그 스트림 찾기
+                        log_group = selected_log_config['LogGroup']
+                        log_prefix = selected_log_config['LogStreamPrefix']
+                        log_region = selected_log_config['Region']
+                        container_name = selected_log_config['ContainerName']
+
+                        print(colored_text(f"\n⏳ 로그 스트림을 검색 중...", Colors.INFO))
+
+                        # 로그 스트림 이름 패턴: {prefix}/{container-name}/{task-id}
+                        log_stream_name = f"{log_prefix}/{container_name}/{task_id}"
+
+                        # 로그 조회 방식 선택
+                        print(colored_text(f"\n--- [ 로그 조회 방식 ] ---", Colors.HEADER))
+                        print(f" 1) 📄 최근 로그 보기 (마지막 100줄)")
+                        print(f" 2) 📺 실시간 로그 스트리밍 (새 터미널)")
+                        print("---------------------------\n")
+
+                        log_mode = input(colored_text("선택 (b=뒤로): ", Colors.PROMPT)).strip().lower()
+                        if not log_mode or log_mode == 'b':
+                            continue
+
+                        if log_mode == '1':
+                            # 최근 로그 조회
+                            print(colored_text(f"\n📋 로그 조회 중... ({container_name})", Colors.INFO))
+                            logs = manager.get_ecs_container_logs(log_region, log_group, log_stream_name, limit=100)
+
+                            if not logs:
+                                print(colored_text("⚠ 로그가 없거나 로그 스트림을 찾을 수 없습니다.", Colors.WARNING))
+                                print(colored_text(f"   Log Group: {log_group}", Colors.INFO))
+                                print(colored_text(f"   Log Stream: {log_stream_name}", Colors.INFO))
+                            else:
+                                print(colored_text(f"\n--- [ Logs: {container_name} ({len(logs)} lines) ] ---", Colors.HEADER))
+                                for log in logs:
+                                    ts = datetime.fromtimestamp(log['timestamp'] / 1000).strftime('%Y-%m-%d %H:%M:%S')
+                                    msg = log['message'].rstrip()
+                                    print(f"{colored_text(ts, Colors.INFO)} | {msg}")
+                                print("------------------------------------------\n")
+                            input(colored_text("계속하려면 Enter를 누르세요...", Colors.PROMPT))
+
+                        elif log_mode == '2':
+                            # 실시간 로그 스트리밍 (새 터미널에서 AWS CLI 사용)
+                            cmd = f"aws logs tail {log_group} --log-stream-names {log_stream_name} --follow --profile {manager.profile} --region {log_region}"
+                            print(colored_text(f"\n📺 실시간 로그 스트리밍을 시작합니다...", Colors.INFO))
+
+                            if IS_MAC:
+                                script = f'''
+                                tell application "Terminal"
+                                    activate
+                                    do script "{cmd}"
+                                end tell
+                                '''
+                                subprocess.Popen(['osascript', '-e', script])
+                            print(colored_text("✅ 새 터미널에서 로그 스트리밍이 시작되었습니다.", Colors.SUCCESS))
+                            time.sleep(1)
+
+                    else:
+                        print(colored_text("❌ 잘못된 선택입니다.", Colors.ERROR))
 
 # ----------------------------------------------------------------------------
 # RDS 접속 (v5.0.2 원본 + 캐싱)
@@ -2941,6 +3712,8 @@ def main():
                 print(f" 2) {colored_text('🗄️ RDS', Colors.RDS)} 데이터베이스 연결")
                 print(f" 3) {colored_text('⚡ ElastiCache', Colors.CACHE)} 클러스터 연결")
                 print(f" 4) {colored_text('🐳 ECS', Colors.ECS)} 컨테이너 연결")
+                print(f" 5) {colored_text('☸️ EKS', Colors.EKS)} 클러스터 관리")
+                print(f" 6) {colored_text('🌐 CloudShell', Colors.INFO)} 브라우저에서 열기")
                 print(f" h) {colored_text('📚 최근 연결 기록', Colors.INFO)}")
                 if _stored_credentials:
                     print(f" c) {colored_text('🗑️ 저장된 DB 자격증명 삭제', Colors.WARNING)}")
@@ -2955,6 +3728,12 @@ def main():
                     connect_to_cache(manager, region)
                 elif sel == '4':
                     ecs_menu(manager, region)
+                elif sel == '5':
+                    eks_menu(manager, region)
+                elif sel == '6':
+                    # CloudShell은 멀티 리전 모드에서는 기본 리전 사용
+                    cloudshell_region = region if region != 'multi-region' else 'ap-northeast-2'
+                    open_cloudshell_browser(cloudshell_region)
                 elif sel == 'h':
                     recent = show_recent_connections()
                     if recent:
