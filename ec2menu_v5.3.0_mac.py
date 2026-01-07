@@ -2852,41 +2852,25 @@ def get_kubectl_namespaces() -> List[str]:
         return []
 
 def launch_kubectl_exec(pod_name: str, namespace: str, container: Optional[str] = None):
-    """새 터미널에서 kubectl exec 세션을 시작합니다."""
+    """새 터미널에서 kubectl exec 세션을 시작합니다. (iTerm2 우선 사용)"""
     cmd_parts = ['kubectl', 'exec', '-it', pod_name, '-n', namespace]
     if container:
         cmd_parts.extend(['-c', container])
     cmd_parts.extend(['--', '/bin/sh', '-c', 'if command -v bash > /dev/null; then exec bash; else exec sh; fi'])
 
-    cmd_str = ' '.join(cmd_parts)
-
     if IS_MAC:
-        script = f'''
-        tell application "Terminal"
-            activate
-            do script "{cmd_str}"
-        end tell
-        '''
-        subprocess.Popen(['osascript', '-e', script])
+        launch_terminal_session(cmd_parts, use_iterm=True)
 
 def launch_kubectl_logs(pod_name: str, namespace: str, container: Optional[str] = None, follow: bool = True):
-    """새 터미널에서 kubectl logs 세션을 시작합니다."""
+    """새 터미널에서 kubectl logs 세션을 시작합니다. (iTerm2 우선 사용)"""
     cmd_parts = ['kubectl', 'logs', pod_name, '-n', namespace]
     if container:
         cmd_parts.extend(['-c', container])
     if follow:
         cmd_parts.append('-f')
 
-    cmd_str = ' '.join(cmd_parts)
-
     if IS_MAC:
-        script = f'''
-        tell application "Terminal"
-            activate
-            do script "{cmd_str}"
-        end tell
-        '''
-        subprocess.Popen(['osascript', '-e', script])
+        launch_terminal_session(cmd_parts, use_iterm=True)
 
 def open_cloudshell_browser(region: str):
     """CloudShell 콘솔 페이지를 브라우저에서 엽니다."""
