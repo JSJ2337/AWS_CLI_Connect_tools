@@ -1898,31 +1898,64 @@ def choose_profile() -> str:
     print(colored_text("❌ 최대 재시도 횟수 초과. 프로그램을 종료합니다.", Colors.ERROR))
     sys.exit(1)
 
+def _check_region_resources(manager: AWSManager, region: str) -> Dict[str, bool]:
+    """리전에 EC2/ECS/EKS 리소스가 있는지 확인합니다."""
+    result = {'ec2': False, 'ecs': False, 'eks': False}
+    try:
+        # EC2 인스턴스 확인
+        if manager.list_instances(region):
+            result['ec2'] = True
+    except Exception:
+        pass
+    try:
+        # ECS 클러스터 확인
+        if manager.list_ecs_clusters(region):
+            result['ecs'] = True
+    except Exception:
+        pass
+    try:
+        # EKS 클러스터 확인
+        if manager.list_eks_clusters(region):
+            result['eks'] = True
+    except Exception:
+        pass
+    return result
+
 def choose_region(manager: AWSManager) -> Optional[str]:
-    """AWS 리전 선택 (str 또는 None 반환)"""
+    """AWS 리전 선택 (str 또는 None 반환) - EC2/ECS/EKS 리소스가 있는 리전 검색"""
     regs = manager.list_regions()
-    valid = []
-    print(colored_text("\n⏳ EC2 인스턴스가 있는 리전을 검색 중입니다. 잠시만 기다려주세요...", Colors.INFO))
+    valid_regions: Dict[str, Dict[str, bool]] = {}
+    print(colored_text("\n⏳ AWS 리소스(EC2/ECS/EKS)가 있는 리전을 검색 중입니다. 잠시만 기다려주세요...", Colors.INFO))
     with concurrent.futures.ThreadPoolExecutor(max_workers=manager.max_workers) as ex:
-        future = {ex.submit(manager.list_instances, r): r for r in regs}
+        future = {ex.submit(_check_region_resources, manager, r): r for r in regs}
         for f in concurrent.futures.as_completed(future):
             r = future[f]
             try:
-                if f.result():
-                    valid.append(r)
+                resources = f.result()
+                if any(resources.values()):
+                    valid_regions[r] = resources
             except Exception as e:
                 logging.warning(f"리전 {r} 검색 중 오류 발생: {e}")
 
-    if not valid:
-        print(colored_text("\n⚠ EC2 인스턴스가 있는 리전이 없습니다. (활성화된 리전이 없거나, 모든 리전에 실행중인 인스턴스가 없습니다)", Colors.WARNING))
+    if not valid_regions:
+        print(colored_text("\n⚠ AWS 리소스가 있는 리전이 없습니다. (EC2/ECS/EKS 모두 없음)", Colors.WARNING))
         return None
 
-    print(colored_text("\n--- [ AWS Regions with EC2 ] ---", Colors.HEADER))
-    valid_sorted = sorted(valid)
+    print(colored_text("\n--- [ AWS Regions with Resources ] ---", Colors.HEADER))
+    valid_sorted = sorted(valid_regions.keys())
     for i, r in enumerate(valid_sorted, 1):
-        print(f" {i:2d}) {r}")
+        resources = valid_regions[r]
+        tags = []
+        if resources.get('ec2'):
+            tags.append(colored_text('EC2', Colors.EC2))
+        if resources.get('ecs'):
+            tags.append(colored_text('ECS', Colors.ECS))
+        if resources.get('eks'):
+            tags.append(colored_text('EKS', Colors.EKS))
+        tags_str = ', '.join(tags) if tags else ''
+        print(f" {i:2d}) {r:<20} [{tags_str}]")
     print(f" {colored_text('99', Colors.INFO)}) 🌏 모든 리전 통합 뷰")
-    print("--------------------------------\n")
+    print("------------------------------------------\n")
 
     retry_count = 0
     while retry_count < Config.MAX_INPUT_RETRIES:
