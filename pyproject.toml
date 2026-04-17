@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "ec2menu"
+version = "5.5.0"
+requires-python = ">=3.9"
+dependencies = [
+    "boto3",
+    "botocore",
+    "simple-term-menu",
+    "colorama",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["ec2menu*"]
