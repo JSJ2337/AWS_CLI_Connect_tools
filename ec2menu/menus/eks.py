@@ -26,17 +26,8 @@ def eks_menu(manager: AWSManager, region: str) -> None:
     while True:
         if region == 'multi-region':
             regions = manager.list_regions()
-            all_clusters = []
-            print(colored_text("⏳ 모든 리전에서 EKS 클러스터 검색 중...", Colors.INFO))
-            for r in regions:
-                try:
-                    clusters_in_region = manager.list_eks_clusters(r)
-                    for c in clusters_in_region:
-                        c['_region'] = r
-                    all_clusters.extend(clusters_in_region)
-                except Exception:
-                    pass
-            clusters = all_clusters
+            print(colored_text("⏳ 모든 리전에서 EKS 클러스터 병렬 검색 중...", Colors.INFO))
+            clusters = manager.list_eks_clusters_multi_region(regions)
         else:
             clusters = manager.list_eks_clusters(region)
             for c in clusters:

@@ -17,7 +17,7 @@ from botocore.exceptions import ClientError
 
 from ec2menu.core.colors import Colors, colored_text
 from ec2menu.core.config import Config
-from ec2menu.core.utils import normalize_file_path
+from ec2menu.core.utils import format_size, normalize_file_path
 
 if TYPE_CHECKING:
     from ec2menu.aws.manager import AWSManager
@@ -124,7 +124,8 @@ class FileTransferManager:
             return False
 
     def download_file_from_s3_to_ec2(self, s3_key: str, remote_path: str,
-                                      instance_id: str, instance_name: str) -> FileTransferResult:
+                                      instance_id: str, instance_name: str,
+                                      instance_region: Optional[str] = None) -> FileTransferResult:
         start_time = time.time()
 
         def _fail(msg: str) -> FileTransferResult:
@@ -159,7 +160,11 @@ class FileTransferManager:
                     f'else\n    echo "TRANSFER_FAILED"\nfi'
                 )
 
-            ssm = self.aws_manager.session.client('ssm')
+            # SSM은 인스턴스가 속한 리전에서 호출해야 함. 미지정 시 세션 기본 리전.
+            if instance_region:
+                ssm = self.aws_manager.session.client('ssm', region_name=instance_region)
+            else:
+                ssm = self.aws_manager.session.client('ssm')
             response = ssm.send_command(
                 InstanceIds=[instance_id],
                 DocumentName='AWS-RunShellScript',
@@ -236,7 +241,8 @@ class FileTransferManager:
                     executor.submit(
                         self.download_file_from_s3_to_ec2,
                         s3_key, remote_path,
-                        inst['raw']['InstanceId'], inst['Name']
+                        inst['raw']['InstanceId'], inst['Name'],
+                        inst.get('Region') or inst['raw'].get('_region'),
                     ): inst
                     for inst in instances
                 }
@@ -294,14 +300,8 @@ class FileTransferManager:
             logging.warning(f"임시 S3 버킷 삭제 실패: {self.temp_bucket} - {e}")
 
     def _format_size(self, size_bytes: int) -> str:
-        if size_bytes == 0:
-            return "0B"
-        size_float = float(size_bytes)
-        for unit in ['B', 'KB', 'MB', 'GB']:
-            if size_float < Config.BYTES_PER_KB:
-                return f"{size_float:.1f}{unit}"
-            size_float /= Config.BYTES_PER_KB
-        return f"{size_float:.1f}TB"
+        # 하위 호환성 유지. 신규 코드는 ec2menu.core.utils.format_size 사용.
+        return format_size(size_bytes)
 
     def _format_speed(self, bytes_per_sec: float) -> str:
-        return f"{self._format_size(int(bytes_per_sec))}/s"
+        return f"{format_size(int(bytes_per_sec))}/s"

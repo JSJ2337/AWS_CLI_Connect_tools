@@ -298,6 +298,24 @@ class AWSManager:
             print(colored_text(f"❌ AWS 호출 실패 (list_ecs_clusters): {e}", Colors.ERROR))
             return []
 
+    def list_ecs_clusters_multi_region(self, regions: List[str],
+                                        force_refresh: bool = False) -> List[Dict]:
+        all_clusters: List[Dict] = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as ex:
+            future_to_region = {
+                ex.submit(self.list_ecs_clusters, region, force_refresh): region
+                for region in regions
+            }
+            for future in concurrent.futures.as_completed(future_to_region):
+                region = future_to_region[future]
+                try:
+                    for cluster in future.result():
+                        cluster['_region'] = region
+                        all_clusters.append(cluster)
+                except Exception as e:
+                    logging.warning(f"리전 {region} ECS 클러스터 검색 실패: {e}")
+        return all_clusters
+
     def list_ecs_services(self, region: str, cluster_name: str, force_refresh: bool = False) -> List[Dict]:
         cache_key = f"ecs_services_{self.profile}_{region}_{cluster_name}"
         if not force_refresh:
@@ -500,6 +518,24 @@ class AWSManager:
         except ClientError as e:
             print(colored_text(f"❌ AWS 호출 실패 (list_eks_clusters): {e}", Colors.ERROR))
             return []
+
+    def list_eks_clusters_multi_region(self, regions: List[str],
+                                        force_refresh: bool = False) -> List[Dict]:
+        all_clusters: List[Dict] = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as ex:
+            future_to_region = {
+                ex.submit(self.list_eks_clusters, region, force_refresh): region
+                for region in regions
+            }
+            for future in concurrent.futures.as_completed(future_to_region):
+                region = future_to_region[future]
+                try:
+                    for cluster in future.result():
+                        cluster['_region'] = region
+                        all_clusters.append(cluster)
+                except Exception as e:
+                    logging.warning(f"리전 {region} EKS 클러스터 검색 실패: {e}")
+        return all_clusters
 
     def get_eks_cluster_detail(self, region: str, cluster_name: str) -> Optional[Dict]:
         cache_key = f"eks_cluster_detail_{self.profile}_{region}_{cluster_name}"
@@ -973,10 +1009,17 @@ class AWSManager:
             logging.warning(f"버킷 리전 조회 실패: {e}")
             return 'unknown'
 
+    def _s3_client(self, region: Optional[str] = None):
+        """버킷 리전에 맞는 S3 클라이언트를 반환. 리전 미지정 시 세션 기본."""
+        if region and region != 'unknown':
+            return self.session.client('s3', region_name=region)
+        return self.session.client('s3')
+
     def list_s3_objects(self, bucket_name: str, prefix: str = "",
-                        delimiter: str = "/", max_keys: int = 100) -> Dict:
+                        delimiter: str = "/", max_keys: int = 100,
+                        region: Optional[str] = None) -> Dict:
         try:
-            s3 = self.session.client('s3')
+            s3 = self._s3_client(region)
             response = s3.list_objects_v2(
                 Bucket=bucket_name, Prefix=prefix, Delimiter=delimiter, MaxKeys=max_keys
             )
@@ -1005,9 +1048,10 @@ class AWSManager:
             logging.warning(f"S3 객체 목록 조회 실패: {e}")
             return {'folders': [], 'files': [], 'IsTruncated': False, 'NextContinuationToken': None}
 
-    def get_s3_object_info(self, bucket_name: str, key: str) -> Optional[Dict]:
+    def get_s3_object_info(self, bucket_name: str, key: str,
+                           region: Optional[str] = None) -> Optional[Dict]:
         try:
-            s3 = self.session.client('s3')
+            s3 = self._s3_client(region)
             response = s3.head_object(Bucket=bucket_name, Key=key)
             return {
                 'Key': key,
@@ -1023,9 +1067,10 @@ class AWSManager:
             return None
 
     def download_s3_object(self, bucket_name: str, key: str, local_path: str,
-                           progress_callback: Optional[Callable] = None) -> bool:
+                           progress_callback: Optional[Callable] = None,
+                           region: Optional[str] = None) -> bool:
         try:
-            s3 = self.session.client('s3')
+            s3 = self._s3_client(region)
             callback = None
             if progress_callback:
                 class ProgressPercentage:
@@ -1042,14 +1087,15 @@ class AWSManager:
 
             s3.download_file(bucket_name, key, local_path, Callback=callback)
             return True
-        except (ClientError, Exception) as e:
+        except Exception as e:
             logging.warning(f"S3 다운로드 실패: {e}")
             return False
 
     def upload_s3_object(self, local_path: str, bucket_name: str, key: str,
-                         progress_callback: Optional[Callable] = None) -> bool:
+                         progress_callback: Optional[Callable] = None,
+                         region: Optional[str] = None) -> bool:
         try:
-            s3 = self.session.client('s3')
+            s3 = self._s3_client(region)
             callback = None
             if progress_callback:
                 file_size = os.path.getsize(local_path)
@@ -1068,13 +1114,14 @@ class AWSManager:
 
             s3.upload_file(local_path, bucket_name, key, Callback=callback)
             return True
-        except (ClientError, Exception) as e:
+        except Exception as e:
             logging.warning(f"S3 업로드 실패: {e}")
             return False
 
-    def generate_presigned_url(self, bucket_name: str, key: str, expiration: int = 3600) -> Optional[str]:
+    def generate_presigned_url(self, bucket_name: str, key: str, expiration: int = 3600,
+                               region: Optional[str] = None) -> Optional[str]:
         try:
-            s3 = self.session.client('s3')
+            s3 = self._s3_client(region)
             return s3.generate_presigned_url(
                 'get_object',
                 Params={'Bucket': bucket_name, 'Key': key},
@@ -1084,9 +1131,10 @@ class AWSManager:
             logging.warning(f"Presigned URL 생성 실패: {e}")
             return None
 
-    def delete_s3_object(self, bucket_name: str, key: str) -> bool:
+    def delete_s3_object(self, bucket_name: str, key: str,
+                         region: Optional[str] = None) -> bool:
         try:
-            s3 = self.session.client('s3')
+            s3 = self._s3_client(region)
             s3.delete_object(Bucket=bucket_name, Key=key)
             return True
         except ClientError as e:

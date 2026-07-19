@@ -23,9 +23,41 @@ def normalize_file_path(path_str: str) -> str:
     return str(Path(path_str).expanduser().resolve())
 
 
+def register_temp_file(path: Path) -> None:
+    """atexit에서 정리할 임시 파일을 등록한다."""
+    with _temp_files_lock:
+        _temp_files_to_cleanup.append(path)
+
+
+def unregister_temp_file(path: Path) -> None:
+    """이미 삭제한 임시 파일을 정리 목록에서 제거한다."""
+    with _temp_files_lock:
+        if path in _temp_files_to_cleanup:
+            _temp_files_to_cleanup.remove(path)
+
+
+def format_size(size_bytes: int) -> str:
+    """바이트 크기를 사람이 읽기 쉬운 단위로 변환 (B/KB/MB/GB/TB)."""
+    if size_bytes <= 0:
+        return "0B"
+    size_float = float(size_bytes)
+    for unit in ('B', 'KB', 'MB', 'GB'):
+        if size_float < Config.BYTES_PER_KB:
+            return f"{size_float:.1f}{unit}"
+        size_float /= Config.BYTES_PER_KB
+    return f"{size_float:.1f}TB"
+
+
 def calculate_local_port(instance_id: str) -> int:
-    """인스턴스 ID로부터 고유한 로컬 포트 번호 생성"""
-    id_hash = int(instance_id[-3:], 16) % (Config.PORT_RANGE_END - Config.PORT_RANGE_START)
+    """인스턴스 ID로부터 고유한 로컬 포트 번호 생성.
+
+    instance_id가 'i-xxxxxxx' 형식이 아니거나 꼬리가 hex가 아닐 수 있어 예외를 흡수한다.
+    """
+    port_span = Config.PORT_RANGE_END - Config.PORT_RANGE_START
+    try:
+        id_hash = int(instance_id[-3:], 16) % port_span
+    except (ValueError, IndexError):
+        id_hash = hash(instance_id) % port_span
     return Config.PORT_RANGE_START + id_hash
 
 

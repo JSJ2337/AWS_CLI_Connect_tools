@@ -10,14 +10,25 @@ from ec2menu.core.cache import _cache
 from ec2menu.core.config import Config
 
 
+_HISTORY_SERVICES = ("ec2", "rds", "cache", "ecs", "eks", "lambda", "s3")
+
+
+def _empty_history() -> Dict[str, Any]:
+    return {service: [] for service in _HISTORY_SERVICES}
+
+
 def load_history() -> Dict[str, Any]:
     try:
         if Config.HISTORY_PATH.exists():
             with open(Config.HISTORY_PATH, 'r', encoding='utf-8') as f:
-                return json.load(f)
+                data = json.load(f)
+            # 저장 파일에 누락된 서비스 키가 있어도 KeyError 나지 않도록 보강
+            for service in _HISTORY_SERVICES:
+                data.setdefault(service, [])
+            return data
     except Exception as e:
         logging.warning(f"히스토리 로드 실패: {e}")
-    return {"ec2": [], "rds": [], "cache": [], "ecs": []}
+    return _empty_history()
 
 
 def save_history(history: Dict[str, Any]) -> None:
@@ -30,6 +41,7 @@ def save_history(history: Dict[str, Any]) -> None:
 
 def add_to_history(service_type: str, profile: str, region: str, instance_id: str, instance_name: str) -> None:
     history = load_history()
+    history.setdefault(service_type, [])
 
     entry = {
         "profile": profile,
@@ -41,7 +53,7 @@ def add_to_history(service_type: str, profile: str, region: str, instance_id: st
 
     history[service_type] = [h for h in history[service_type] if h["instance_id"] != instance_id]
     history[service_type].insert(0, entry)
-    history[service_type] = history[service_type][:10]
+    history[service_type] = history[service_type][:Config.HISTORY_MAX_SIZE // 10]
 
     save_history(history)
 

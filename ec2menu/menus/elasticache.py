@@ -62,7 +62,7 @@ def connect_to_cache(manager: AWSManager, region: str) -> None:
         if not tgt:
             break
 
-        local_port = 12000 + idx
+        local_port = Config.CACHE_PORT_START + idx
         print(colored_text(f"\n(info) SSM 인스턴스 '{tgt}'를 통해 포트 포워딩을 시작합니다.", Colors.INFO))
         print(colored_text(f"🔹 포트 포워딩: [localhost:{local_port}] -> [{c['Id']}:{c['Port']}] ({cache_region})", Colors.INFO))
 

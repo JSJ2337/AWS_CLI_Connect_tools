@@ -299,7 +299,7 @@ def reconnect_to_instance(manager: AWSManager, entry: dict) -> None:
             tgt = choose_jump_host(manager, region)
             if not tgt:
                 return
-            local_port = 11000
+            local_port = Config.RDS_PORT_START
             print(colored_text(f"🔹 포트 포워딩: [localhost:{local_port}] -> [{db['DBInstanceIdentifier']}:{db['Endpoint']['Port']}]", Colors.INFO))
             params_dict = {
                 "host": [db["Endpoint"]["Address"]],
@@ -347,7 +347,7 @@ def reconnect_to_instance(manager: AWSManager, entry: dict) -> None:
             tgt = choose_jump_host(manager, region)
             if not tgt:
                 return
-            local_port = 12000
+            local_port = Config.CACHE_PORT_START
             print(colored_text(f"🔹 포트 포워딩: [localhost:{local_port}] -> [{cluster['CacheClusterId']}:{ep.get('Port', 0)}]", Colors.INFO))
             params_dict = {
                 "host": [ep.get('Address', '')],
