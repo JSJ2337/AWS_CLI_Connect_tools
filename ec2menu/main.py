@@ -424,8 +424,13 @@ def main() -> None:
                         choices=['ec2', 'rds', 'cache', 'ecs', 'eks', 'cloudwatch', 'lambda', 's3'],
                         help='직접 진입할 서비스')
     parser.add_argument('--no-cache', action='store_true', help='캐시 비활성화')
+    parser.add_argument('--doctor', action='store_true', help='환경 진단 실행 후 종료')
     parser.add_argument('-v', '--version', action='version', version='%(prog)s v5.5.0')
     args = parser.parse_args()
+
+    if args.doctor:
+        from ec2menu.core.doctor import run_doctor
+        sys.exit(run_doctor(args.profile))
 
     if args.no_cache:
         Config.CACHE_TTL_SECONDS = 0
@@ -486,6 +491,7 @@ def main() -> None:
                     "📦 S3 버킷 브라우저",
                     "📚 최근 연결 기록",
                     "❓ 도움말",
+                    "🩺 환경 진단",
                 ]
                 if _stored_credentials:
                     menu_items.append("🗑️ 저장된 DB 자격증명 삭제")
@@ -526,9 +532,13 @@ def main() -> None:
                         reconnect_to_instance(temp_manager, recent)
                 elif selected == 10:
                     show_main_help()
-                elif has_creds and selected == 11:
+                elif selected == 11:
+                    from ec2menu.core.doctor import run_doctor
+                    run_doctor(profile)
+                    input(colored_text("\n계속하려면 Enter를 누르세요...", Colors.PROMPT))
+                elif has_creds and selected == 12:
                     clear_stored_credentials()
-                elif (has_creds and selected == 12) or (not has_creds and selected == 11):
+                elif (has_creds and selected == 13) or (not has_creds and selected == 12):
                     break
 
     finally:
