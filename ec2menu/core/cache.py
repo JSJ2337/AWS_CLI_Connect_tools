@@ -27,8 +27,17 @@ class PerformanceCache:
         self._background_refresh_active = {}
 
     def _get_ttl_for_key(self, key: str) -> int:
-        resource_type = key.split('_')[0].lower() if '_' in key else 'default'
-        return Config.CACHE_TTLS.get(resource_type, Config.CACHE_TTLS['default'])
+        # 복합 접두사(cloudwatch_alarms, s3_buckets 등)를 올바르게 매칭하기 위해
+        # 긴 접두사부터 검사하여 최장 일치를 우선한다.
+        key_lower = key.lower()
+        for ttl_key in sorted(
+            (k for k in Config.CACHE_TTLS if k != 'default'),
+            key=len,
+            reverse=True,
+        ):
+            if key_lower == ttl_key or key_lower.startswith(ttl_key + '_'):
+                return Config.CACHE_TTLS[ttl_key]
+        return Config.CACHE_TTLS['default']
 
     def get(self, key: str) -> Optional[Any]:
         with self._lock:
@@ -70,5 +79,8 @@ class PerformanceCache:
         threading.Thread(target=refresh_worker, daemon=True).start()
 
 
-# 전역 캐시 싱글톤
-_cache = PerformanceCache()
+# 전역 캐시 싱글톤 (public)
+cache = PerformanceCache()
+
+# 하위 호환성을 위한 별칭 (기존 `_cache` 참조 코드 유지)
+_cache = cache

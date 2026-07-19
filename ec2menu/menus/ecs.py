@@ -1,13 +1,12 @@
 """ECS 클러스터/서비스/태스크/컨테이너 메뉴"""
 from __future__ import annotations
 
-import subprocess
 import time
 from datetime import datetime
 
 from ec2menu.core.colors import Colors, colored_text
 from ec2menu.core.config import Config, IS_MAC
-from ec2menu.terminal.session import launch_ecs_exec
+from ec2menu.terminal.session import launch_ecs_exec, launch_terminal_session
 from ec2menu.ui.history import add_to_history
 from ec2menu.ui.menu import interactive_select
 
@@ -20,17 +19,8 @@ def ecs_menu(manager: AWSManager, region: str) -> None:
     while True:
         if region == 'multi-region':
             regions = manager.list_regions()
-            all_clusters = []
-            print(colored_text("⏳ 모든 리전에서 ECS 클러스터 검색 중...", Colors.INFO))
-            for r in regions:
-                try:
-                    clusters_in_region = manager.list_ecs_clusters(r)
-                    for c in clusters_in_region:
-                        c['_region'] = r
-                    all_clusters.extend(clusters_in_region)
-                except Exception:
-                    pass
-            clusters = all_clusters
+            print(colored_text("⏳ 모든 리전에서 ECS 클러스터 병렬 검색 중...", Colors.INFO))
+            clusters = manager.list_ecs_clusters_multi_region(regions)
         else:
             clusters = manager.list_ecs_clusters(region)
             for c in clusters:
@@ -202,15 +192,16 @@ def ecs_menu(manager: AWSManager, region: str) -> None:
                             input(colored_text("계속하려면 Enter를 누르세요...", Colors.PROMPT))
 
                         elif log_mode == 1:
-                            cmd = f"aws logs tail {log_group} --log-stream-names {log_stream_name} --follow --profile {manager.profile} --region {log_region}"
+                            cmd_args = [
+                                'aws', 'logs', 'tail', log_group,
+                                '--log-stream-names', log_stream_name,
+                                '--follow',
+                                '--profile', manager.profile,
+                                '--region', log_region,
+                            ]
                             print(colored_text("\n📺 실시간 로그 스트리밍을 시작합니다...", Colors.INFO))
                             if IS_MAC:
-                                script = f'''
-                                tell application "Terminal"
-                                    activate
-                                    do script "{cmd}"
-                                end tell
-                                '''
-                                subprocess.Popen(['osascript', '-e', script])
+                                # 공통 런처 사용: iTerm2 우선, 없으면 Terminal.app fallback
+                                launch_terminal_session(cmd_args)
                             print(colored_text("✅ 새 터미널에서 로그 스트리밍이 시작되었습니다.", Colors.SUCCESS))
                             time.sleep(1)

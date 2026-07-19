@@ -13,7 +13,7 @@ from typing import List, Optional
 
 from ec2menu.core.colors import Colors, colored_text
 from ec2menu.core.config import Config
-from ec2menu.core.utils import _temp_files_lock, _temp_files_to_cleanup
+from ec2menu.core.utils import register_temp_file, unregister_temp_file
 
 
 def ssm_cmd(profile: str, region: str, iid: str) -> List[str]:
@@ -45,13 +45,15 @@ def create_ssm_forward_command(profile: str, region: str, target: str,
     return cmd
 
 
-def start_port_forward(profile: str, region: str, iid: str, port: int) -> subprocess.Popen:
+def start_port_forward(profile: str, region: str, iid: str, port: int,
+                       remote_port: int = Config.RDP_DEFAULT_PORT) -> subprocess.Popen:
+    """SSM 포트 포워딩 시작. remote_port 기본값은 RDP(3389)."""
     cmd = [
         'aws', 'ssm', 'start-session',
         '--region', region,
         '--target', iid,
         '--document-name', 'AWS-StartPortForwardingSession',
-        '--parameters', f'{{"portNumber":["3389"],"localPortNumber":["{port}"]}}',
+        '--parameters', f'{{"portNumber":["{remote_port}"],"localPortNumber":["{port}"]}}',
     ]
     if profile != 'default':
         cmd[1:1] = ['--profile', profile]
@@ -123,8 +125,7 @@ username:s:Administrator
 
     os.chmod(rdp_file, 0o600)
 
-    with _temp_files_lock:
-        _temp_files_to_cleanup.append(rdp_file)
+    register_temp_file(rdp_file)
 
     print(colored_text(f'\n📄 RDP 연결 파일 생성: {rdp_file}', Colors.INFO))
 
@@ -146,9 +147,7 @@ username:s:Administrator
         try:
             if rdp_file.exists():
                 rdp_file.unlink()
-                with _temp_files_lock:
-                    if rdp_file in _temp_files_to_cleanup:
-                        _temp_files_to_cleanup.remove(rdp_file)
+                unregister_temp_file(rdp_file)
                 print(colored_text('🗑️  임시 RDP 파일 삭제됨', Colors.INFO))
         except Exception as e:
             logging.warning(f"RDP 파일 즉시 삭제 실패 (프로그램 종료 시 재시도): {rdp_file} - {e}")

@@ -14,8 +14,10 @@ __pycache__/
 *.so
 .Python
 venv/
+.venv/
 env/
 ENV/
+.pytest_cache/
 
 # AWS Credentials
 *.pem

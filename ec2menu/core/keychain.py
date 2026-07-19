@@ -24,6 +24,8 @@ class KeychainManager:
                 ['security', 'delete-generic-password', '-a', account, '-s', service],
                 capture_output=True, check=False
             )
+            # security 도구의 -w 플래그는 /dev/tty에서만 대화형 입력을 받아 subprocess stdin 우회 불가.
+            # 비밀번호가 순간적으로 `ps`에 노출되는 macOS 제약이나, 로컬 사용자 본인만 관측 가능.
             result = subprocess.run(
                 ['security', 'add-generic-password', '-a', account, '-s', service, '-w', password],
                 capture_output=True, text=True

@@ -6,22 +6,12 @@ import sys
 from pathlib import Path
 
 from ec2menu.core.colors import Colors, colored_text
+from ec2menu.core.utils import format_size
 from ec2menu.ui.menu import interactive_select
 
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from ec2menu.aws.manager import AWSManager
-
-
-def format_size(size_bytes: int) -> str:
-    if size_bytes < 1024:
-        return f"{size_bytes}B"
-    elif size_bytes < 1024 * 1024:
-        return f"{size_bytes / 1024:.1f}KB"
-    elif size_bytes < 1024 * 1024 * 1024:
-        return f"{size_bytes / (1024 * 1024):.1f}MB"
-    else:
-        return f"{size_bytes / (1024 * 1024 * 1024):.2f}GB"
 
 
 def s3_browser_menu(manager: AWSManager, region: str) -> None:
@@ -55,7 +45,7 @@ def s3_browser_menu(manager: AWSManager, region: str) -> None:
 
 def s3_bucket_browser(manager: AWSManager, bucket_name: str, bucket_region: str, prefix: str = "") -> None:
     while True:
-        result = manager.list_s3_objects(bucket_name, prefix=prefix, max_keys=100)
+        result = manager.list_s3_objects(bucket_name, prefix=prefix, max_keys=100, region=bucket_region)
         folders = result.get('folders', [])
         files = result.get('files', [])
 
@@ -121,7 +111,7 @@ def s3_file_actions(manager: AWSManager, bucket_name: str, bucket_region: str, f
             return
 
         if action_sel == 0:
-            info = manager.get_s3_object_info(bucket_name, file_key)
+            info = manager.get_s3_object_info(bucket_name, file_key, region=bucket_region)
             if info:
                 print(colored_text(f"\n{'─' * 70}", Colors.HEADER))
                 print(colored_text("📄 파일 정보", Colors.INFO))
@@ -157,7 +147,7 @@ def s3_file_actions(manager: AWSManager, bucket_name: str, bucket_region: str, f
                 sys.stdout.write(f"\r  [{bar}] {percentage:.1f}% ({format_size(downloaded)}/{format_size(total)})")
                 sys.stdout.flush()
 
-            success = manager.download_s3_object(bucket_name, file_key, local_path, progress_callback)
+            success = manager.download_s3_object(bucket_name, file_key, local_path, progress_callback, region=bucket_region)
             print()
             if success:
                 print(colored_text(f"✅ 다운로드 완료: {local_path}", Colors.SUCCESS))
@@ -173,7 +163,7 @@ def s3_file_actions(manager: AWSManager, bucket_name: str, bucket_region: str, f
                 continue
 
             expiration = [3600, 21600, 86400, 604800][expiry_sel]
-            url = manager.generate_presigned_url(bucket_name, file_key, expiration=expiration)
+            url = manager.generate_presigned_url(bucket_name, file_key, expiration=expiration, region=bucket_region)
 
             if url:
                 print(colored_text(f"\n🔗 Presigned URL (유효: {expiry_items[expiry_sel]}):", Colors.INFO))
@@ -192,7 +182,7 @@ def s3_file_actions(manager: AWSManager, bucket_name: str, bucket_region: str, f
             confirm = input(colored_text("삭제하려면 'DELETE' 입력: ", Colors.PROMPT)).strip()
 
             if confirm == 'DELETE':
-                success = manager.delete_s3_object(bucket_name, file_key)
+                success = manager.delete_s3_object(bucket_name, file_key, region=bucket_region)
                 if success:
                     print(colored_text("✅ 파일이 삭제되었습니다.", Colors.SUCCESS))
                     input(colored_text("\n계속하려면 Enter를 누르세요...", Colors.PROMPT))

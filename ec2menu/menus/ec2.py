@@ -11,7 +11,7 @@ from ec2menu.aws.batch import BatchJobManager
 from ec2menu.aws.transfer import FileTransferManager
 from ec2menu.core.colors import Colors, colored_text
 from ec2menu.core.config import Config
-from ec2menu.core.utils import calculate_local_port, normalize_file_path
+from ec2menu.core.utils import calculate_local_port, format_size, normalize_file_path
 from ec2menu.terminal.session import launch_linux_wt, launch_rdp, start_port_forward
 from ec2menu.ui.history import add_to_history, invalidate_cache_for_service
 from ec2menu.ui.menu import interactive_select
@@ -58,13 +58,27 @@ def sort_instances(instances: List[dict], sort_key: str = 'Name', reverse: bool 
         return instances
 
 
-def show_sort_help() -> None:
-    print(colored_text("\n📊 정렬 옵션:", Colors.INFO))
-    print("  n = 이름순 정렬")
-    print("  t = 타입순 정렬")
-    print("  r = 리전순 정렬")
-    print("  s = 상태순 정렬")
-    print("  같은 키를 다시 누르면 역순 정렬")
+_SORT_OPTIONS = [
+    ('Name', '이름'),
+    ('Type', '인스턴스 타입'),
+    ('Region', '리전'),
+    ('State', '상태'),
+]
+
+
+def choose_sort_key() -> Optional[tuple]:
+    """정렬 기준 선택 서브메뉴. (sort_key, reverse) 또는 None 반환."""
+    labels = [f"{label} (내림차순)" if key == _sort_key and not _sort_reverse
+              else f"{label} (오름차순)" if key == _sort_key and _sort_reverse
+              else label
+              for key, label in _SORT_OPTIONS]
+    labels.append("🔙 돌아가기")
+    sel = interactive_select(labels, title="정렬 기준 선택")
+    if sel == -1 or sel == len(_SORT_OPTIONS):
+        return None
+    new_key, _ = _SORT_OPTIONS[sel]
+    reverse = not _sort_reverse if new_key == _sort_key else False
+    return (new_key, reverse)
 
 
 def ec2_menu(manager: AWSManager, region: str) -> None:
@@ -116,13 +130,14 @@ def ec2_menu(manager: AWSManager, region: str) -> None:
                 menu_items.append(item)
 
             menu_items.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+            menu_items.append(f"🔤 정렬 변경 (현재: {_sort_key}{'↓' if _sort_reverse else '↑'})")
             menu_items.append("📋 배치 작업 (여러 인스턴스에 명령 실행)")
             menu_items.append("📁 파일 업로드 (여러 인스턴스에 파일 전송)")
             menu_items.append("🔄 목록 새로고침")
             menu_items.append("🔙 메인 메뉴로 돌아가기")
 
             title = f"EC2 Instances  │  Profile: {manager.profile}  │  Region: {region_display}  │  Sort: {_sort_key}"
-            footer = "↑↓: 이동  Enter: 접속  /: 검색  b: 메인  r: 새로고침"
+            footer = "↑↓: 이동  Enter: 접속  /: 검색"
             selected = interactive_select(menu_items, title=title, footer=footer)
 
             separator_idx = len(insts)
@@ -132,10 +147,12 @@ def ec2_menu(manager: AWSManager, region: str) -> None:
             elif selected == separator_idx:
                 continue
             elif selected == separator_idx + 1:
-                sel = 'batch'
+                sel = 'sort'
             elif selected == separator_idx + 2:
-                sel = 'upload'
+                sel = 'batch'
             elif selected == separator_idx + 3:
+                sel = 'upload'
+            elif selected == separator_idx + 4:
                 sel = 'r'
             elif 0 <= selected < separator_idx:
                 sel = str(selected + 1)
@@ -149,14 +166,10 @@ def ec2_menu(manager: AWSManager, region: str) -> None:
                 invalidate_cache_for_service(manager, region, "instances")
                 force_refresh = True
                 continue
-            elif sel in ['n', 't', 's', 'r']:
-                sort_map = {'n': 'Name', 't': 'Type', 's': 'State', 'r': 'Region'}
-                new_sort_key = sort_map.get(sel, 'Name')
-                if new_sort_key == _sort_key:
-                    _sort_reverse = not _sort_reverse
-                else:
-                    _sort_key = new_sort_key
-                    _sort_reverse = False
+            elif sel == 'sort':
+                result = choose_sort_key()
+                if result is not None:
+                    _sort_key, _sort_reverse = result
                 continue
             elif sel == 'batch':
                 print(colored_text("\n📋 배치 작업 모드", Colors.HEADER))
@@ -231,7 +244,7 @@ def ec2_menu(manager: AWSManager, region: str) -> None:
                     except OSError as e:
                         print(colored_text(f"❌ 파일 접근 실패: {local_path} - {e}", Colors.ERROR))
                         continue
-                    print(colored_text(f"📊 파일 크기: {file_transfer_manager._format_size(file_size)}", Colors.INFO))
+                    print(colored_text(f"📊 파일 크기: {format_size(file_size)}", Colors.INFO))
                     remote_path = input(colored_text("대상 EC2 경로 (b=뒤로): ", Colors.PROMPT)).strip()
                     if not remote_path:
                         print(colored_text("❌ 대상 경로를 입력해야 합니다.", Colors.ERROR))
@@ -270,6 +283,7 @@ def ec2_menu(manager: AWSManager, region: str) -> None:
                 continue
 
             rdp_started = False
+            used_ports: set[int] = set()
             for i, choice_idx in enumerate(valid_choices):
                 inst_data = insts[choice_idx - 1]
                 inst = inst_data['raw']
@@ -277,7 +291,10 @@ def ec2_menu(manager: AWSManager, region: str) -> None:
                 add_to_history('ec2', manager.profile, inst_region, inst['InstanceId'], inst_data['Name'])
                 if inst.get('PlatformDetails', 'Linux').lower().startswith('windows'):
                     rdp_started = True
-                    local_port = calculate_local_port(inst['InstanceId']) + i
+                    local_port = calculate_local_port(inst['InstanceId'])
+                    while local_port in used_ports:
+                        local_port += 1
+                    used_ports.add(local_port)
                     print(colored_text(f"\n(info) Windows 인스턴스 RDP 연결을 시작합니다 (localhost:{local_port})...", Colors.INFO))
                     proc = start_port_forward(manager.profile, inst_region, inst['InstanceId'], local_port)
                     procs.append(proc)
